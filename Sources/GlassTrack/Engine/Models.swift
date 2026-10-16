@@ -147,7 +147,7 @@ enum StageID: String, CaseIterable, Identifiable {
         case .features: "Detect Features"
         case .matching: "Match Features"
         case .mapping: "Solve Camera"
-        case .undistort: "Undistort Plate"
+        case .undistort: "Undistort Frames"
         case .export: "Export Model"
         case .blender: "Build Blender Scene"
         }

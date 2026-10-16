@@ -73,6 +73,7 @@ struct ProgressRing: View {
     var body: some View {
         ZStack {
             Circle().stroke(.primary.opacity(0.08), lineWidth: lineWidth)
+                .overlay(Circle().stroke(.black.opacity(0.12), lineWidth: 1).blur(radius: 1).padding(lineWidth / 2))
             Circle()
                 .trim(from: 0, to: max(0.001, progress))
                 .stroke(
@@ -80,7 +81,8 @@ struct ProgressRing: View {
                     style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
-                .animation(.smooth(duration: 0.4), value: progress)
+                .shadow(color: tint.opacity(0.55), radius: lineWidth * 0.8)
+                .animation(.spring(response: 0.6, dampingFraction: 0.85), value: progress)
         }
     }
 }

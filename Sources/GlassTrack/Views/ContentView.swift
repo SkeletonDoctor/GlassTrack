@@ -106,9 +106,8 @@ private struct JobRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(job.name).lineLimit(1).font(.callout.weight(.medium))
                 if job.status == .running {
-                    ProgressView(value: job.overallProgress)
-                        .progressViewStyle(.linear)
-                        .controlSize(.mini)
+                    GlassProgressBar(value: job.overallProgress, height: 4)
+                        .padding(.top, 2)
                 } else {
                     HStack(spacing: 4) {
                         Circle().fill(job.status.color).frame(width: 6, height: 6)

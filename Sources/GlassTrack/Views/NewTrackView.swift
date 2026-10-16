@@ -170,33 +170,15 @@ private struct DraftEditor: View {
     }
 
     private var qualityPicker: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Quality").font(.headline).padding(.leading, 4)
+        VStack(alignment: .leading, spacing: 12) {
+            SectionTitle(title: "Quality", symbol: "dial.high")
+                .padding(.horizontal, 4)
             GlassEffectContainer(spacing: 12) {
                 HStack(spacing: 12) {
                     ForEach(QualityPreset.allCases) { q in
-                        let selected = job.settings.quality == q
-                        Button {
-                            withAnimation(.bouncy) { job.settings.quality = q }
-                        } label: {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Image(systemName: q.symbol)
-                                    .font(.title2)
-                                    .foregroundStyle(selected ? Color.white : Color.accentColor)
-                                Text(q.title).font(.headline)
-                                Text(q.subtitle)
-                                    .font(.caption)
-                                    .foregroundStyle(selected ? .white.opacity(0.85) : .secondary)
-                                    .lineLimit(2, reservesSpace: true)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(14)
-                            .contentShape(.rect)
+                        QualityCard(preset: q, selected: job.settings.quality == q) {
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) { job.settings.quality = q }
                         }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(selected ? .white : .primary)
-                        .glassEffect(selected ? .regular.tint(.accentColor).interactive() : .regular.interactive(),
-                                     in: .rect(cornerRadius: 20))
                     }
                 }
             }
@@ -204,144 +186,183 @@ private struct DraftEditor: View {
     }
 
     private var samplingCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Label("Frames", systemImage: "film.stack").font(.headline)
-                Spacer()
-                Text("≈ \(job.estimatedFrames) frames to solve")
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .contentTransition(.numericText())
-                    .animation(.smooth, value: job.estimatedFrames)
-            }
-            if job.inputKind == .video {
-                Picker("Sampling", selection: $job.settings.sampling) {
-                    ForEach(FrameSampling.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+        VStack(alignment: .leading, spacing: 16) {
+            SectionTitle(title: "Frames", symbol: "film.stack",
+                         trailing: "≈ \(job.estimatedFrames) frames to solve")
+                .animation(.smooth, value: job.estimatedFrames)
 
-                if job.settings.sampling == .everyNth {
-                    HStack {
-                        Text("Use every")
-                        Stepper(value: $job.settings.frameStep, in: 1...30) {
-                            Text("\(job.settings.frameStep)").monospacedDigit().bold()
+            if job.inputKind == .video {
+                GlassSegmented(selection: $job.settings.sampling, options: [
+                    DropdownOption(value: .everyNth, title: "Every Nth Frame", symbol: "square.stack.3d.down.right"),
+                    DropdownOption(value: .targetFPS, title: "Target FPS", symbol: "speedometer"),
+                ])
+                .frame(maxWidth: 420)
+
+                Group {
+                    if job.settings.sampling == .everyNth {
+                        SettingRow(symbol: "forward.frame", color: .blue, title: "Frame step",
+                                   subtitle: job.settings.frameStep == 1
+                                       ? "Every frame is solved"
+                                       : "Solve every \(Self.ordinal(job.settings.frameStep)) frame; keys land on original frame numbers") {
+                            GlassStepper(value: $job.settings.frameStep, range: 1...30)
                         }
-                        Text(job.settings.frameStep == 1 ? "frame (all)" : "frames")
-                        Spacer()
-                        Text("Keyframes are placed on the original frame numbers.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                } else {
-                    HStack {
-                        Text("Target")
-                        Slider(value: $job.settings.targetFPS, in: 1...30, step: 1)
-                        Text("\(Int(job.settings.targetFPS)) fps").monospacedDigit().frame(width: 52)
+                    } else {
+                        SettingRow(symbol: "speedometer", color: .teal, title: "Sample rate",
+                                   subtitle: "Frames per second of footage") {
+                            HStack(spacing: 12) {
+                                Slider(value: $job.settings.targetFPS, in: 1...30, step: 1)
+                                    .frame(width: 180)
+                                Text("\(Int(job.settings.targetFPS)) fps")
+                                    .monospacedDigit()
+                                    .font(.body.weight(.semibold))
+                                    .contentTransition(.numericText(value: job.settings.targetFPS))
+                                    .frame(width: 56, alignment: .trailing)
+                            }
+                        }
                     }
                 }
+                .transition(.blurReplace)
+                Hairline()
             }
-            HStack {
-                Toggle("Limit frame count", isOn: Binding(
-                    get: { job.settings.maxFrames > 0 },
-                    set: { job.settings.maxFrames = $0 ? 300 : 0 }))
-                if job.settings.maxFrames > 0 {
-                    Stepper(value: $job.settings.maxFrames, in: 10...5000, step: 50) {
-                        Text("\(job.settings.maxFrames) max").monospacedDigit()
+
+            SettingRow(symbol: "number", color: .orange, title: "Limit frame count",
+                       subtitle: job.settings.maxFrames > 0 ? "Stop after \(job.settings.maxFrames) frames" : "Use the whole clip") {
+                HStack(spacing: 12) {
+                    if job.settings.maxFrames > 0 {
+                        GlassStepper(value: $job.settings.maxFrames, range: 10...5000, step: 50)
+                            .transition(.scale.combined(with: .opacity))
                     }
+                    Toggle("", isOn: Binding(
+                        get: { job.settings.maxFrames > 0 },
+                        set: { on in withAnimation(.snappy) { job.settings.maxFrames = on ? 300 : 0 } }))
+                        .toggleStyle(.switch)
+                        .labelsHidden()
                 }
-                Spacer()
             }
         }
-        .padding(18)
-        .glassCard(24)
+        .animation(.smooth, value: job.settings.sampling)
+        .padding(20)
+        .glassCard(26)
     }
 
     private var advancedCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             Button {
-                withAnimation(.smooth) { showAdvanced.toggle() }
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) { showAdvanced.toggle() }
             } label: {
                 HStack {
-                    Label("Advanced", systemImage: "slider.horizontal.3").font(.headline)
-                    Spacer()
+                    SectionTitle(title: "Advanced", symbol: "slider.horizontal.3")
                     Image(systemName: "chevron.down")
+                        .font(.callout.weight(.bold))
+                        .foregroundStyle(.secondary)
                         .rotationEffect(.degrees(showAdvanced ? 180 : 0))
+                        .frame(width: 30, height: 30)
+                        .glassEffect(.regular.interactive(), in: .circle)
                 }
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
 
             if showAdvanced {
-                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
-                    GridRow {
-                        Text("Lens model").foregroundStyle(.secondary)
-                        Picker("", selection: $job.settings.cameraModel) {
-                            ForEach(CameraModel.allCases) { Text($0.title).tag($0) }
-                        }.labelsHidden()
+                VStack(spacing: 4) {
+                    SettingRow(symbol: "camera.aperture", color: .indigo, title: "Lens model",
+                               subtitle: "How lens distortion is modelled") {
+                        GlassDropdown(selection: $job.settings.cameraModel, options: [
+                            DropdownOption(value: .simpleRadial, title: "Simple Radial", subtitle: "Recommended for most cameras", symbol: "camera"),
+                            DropdownOption(value: .radial, title: "Radial", subtitle: "Two distortion terms", symbol: "camera.metering.center.weighted"),
+                            DropdownOption(value: .opencv, title: "OpenCV", subtitle: "Wide-angle & action cams", symbol: "camera.metering.matrix"),
+                            DropdownOption(value: .pinhole, title: "Pinhole", subtitle: "No distortion", symbol: "circle.dashed"),
+                            DropdownOption(value: .simplePinhole, title: "Simple Pinhole", subtitle: "Single focal, no distortion", symbol: "circle"),
+                        ])
                     }
-                    GridRow {
-                        Text("Matching").foregroundStyle(.secondary)
-                        Picker("", selection: $job.settings.matcher) {
-                            ForEach(MatcherKind.allCases) { Text($0.title).tag($0) }
-                        }.labelsHidden()
+                    Hairline()
+                    SettingRow(symbol: "point.3.connected.trianglepath.dotted", color: .purple, title: "Matching",
+                               subtitle: "Which frames are compared") {
+                        GlassDropdown(selection: $job.settings.matcher, options: [
+                            DropdownOption(value: .sequential, title: "Sequential", subtitle: "Neighbouring frames — best for video", symbol: "film"),
+                            DropdownOption(value: .exhaustive, title: "Exhaustive", subtitle: "Every pair — unordered photos", symbol: "square.grid.3x3"),
+                        ])
                     }
-                    GridRow {
-                        Text("Solver").foregroundStyle(.secondary)
-                        Picker("", selection: $job.settings.mapper) {
-                            ForEach(MapperKind.allCases) { Text($0.title).tag($0) }
-                        }.labelsHidden()
+                    Hairline()
+                    SettingRow(symbol: "cube.transparent", color: .pink, title: "Solver",
+                               subtitle: "Reconstruction strategy") {
+                        GlassDropdown(selection: $job.settings.mapper, options: [
+                            DropdownOption(value: .incremental, title: "Incremental", subtitle: "Most robust, adds frames one by one", symbol: "plus.square.on.square"),
+                            DropdownOption(value: .global, title: "Global (GLOMAP)", subtitle: "Much faster on long shots", symbol: "globe"),
+                        ])
                     }
-                    GridRow {
-                        Text("JPEG quality").foregroundStyle(.secondary)
-                        Picker("", selection: $job.settings.jpegQuality) {
-                            Text("Maximum").tag(2); Text("High").tag(4); Text("Medium").tag(7)
-                        }.labelsHidden().pickerStyle(.segmented)
+                    Hairline()
+                    SettingRow(symbol: "photo", color: .green, title: "Frame quality",
+                               subtitle: "JPEG quality of extracted frames") {
+                        GlassSegmented(selection: $job.settings.jpegQuality, options: [
+                            DropdownOption(value: 2, title: "Max"),
+                            DropdownOption(value: 4, title: "High"),
+                            DropdownOption(value: 7, title: "Medium"),
+                        ])
+                        .frame(width: 240)
                     }
-                    GridRow {
-                        Text("Options").foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("Same camera for all frames (fixed zoom)", isOn: $job.settings.singleCamera)
-                            Toggle("Export undistorted frames", isOn: $job.settings.undistort)
-                            Toggle("Build .blend scene automatically", isOn: $job.settings.buildBlend)
-                                .disabled(ToolLocator.blender() == nil)
-                        }
+                    Hairline()
+                    SettingRow(symbol: "camera.fill", color: .blue, title: "Fixed zoom",
+                               subtitle: "All frames share one camera") {
+                        Toggle("", isOn: $job.settings.singleCamera).toggleStyle(.switch).labelsHidden()
                     }
-                    GridRow {
-                        Text("Output").foregroundStyle(.secondary)
-                        HStack {
-                            Text(job.outputRoot.path(percentEncoded: false))
-                                .lineLimit(1).truncationMode(.head)
-                                .font(.callout.monospaced())
-                            Button("Change…") { chooseOutput() }
-                                .buttonStyle(.glass)
-                        }
+                    Hairline()
+                    SettingRow(symbol: "rectangle.dashed", color: .cyan, title: "Undistorted frames",
+                               subtitle: "Also export lens-corrected images") {
+                        Toggle("", isOn: $job.settings.undistort).toggleStyle(.switch).labelsHidden()
+                    }
+                    Hairline()
+                    SettingRow(symbol: "cube.transparent.fill", color: .orange, title: "Build .blend scene",
+                               subtitle: ToolLocator.blender() == nil ? "Blender not installed" : "Camera, point cloud & plate, ready to open") {
+                        Toggle("", isOn: $job.settings.buildBlend).toggleStyle(.switch).labelsHidden()
+                            .disabled(ToolLocator.blender() == nil)
+                    }
+                    Hairline()
+                    SettingRow(symbol: "folder.fill", color: .gray, title: "Save to",
+                               subtitle: job.outputRoot.path(percentEncoded: false)) {
+                        Button("Change…") { chooseOutput() }
+                            .buttonStyle(.glass)
+                            .buttonBorderShape(.capsule)
                     }
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(18)
-        .glassCard(24)
+        .padding(20)
+        .glassCard(26)
     }
 
     private var actions: some View {
-        HStack {
-            Text("Runs COLMAP on all CPU cores. You can queue more tracks while this one solves.")
+        HStack(spacing: 14) {
+            Label("Runs on all CPU cores · queue as many tracks as you like", systemImage: "cpu")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
+            Button(role: .cancel, action: onCancel) {
+                Text("Cancel").padding(.horizontal, 6)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+
             Button(action: onStart) {
                 Label("Start Tracking", systemImage: "play.fill")
                     .font(.headline)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 10)
             }
             .buttonStyle(.glassProminent)
+            .buttonBorderShape(.capsule)
             .controlSize(.extraLarge)
             .keyboardShortcut(.defaultAction)
             .disabled(job.videoInfo == nil && job.imageCount == 0)
         }
         .padding(.top, 4)
+    }
+
+    static func ordinal(_ n: Int) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .ordinal
+        return f.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 
     private func chooseOutput() {
@@ -365,5 +386,57 @@ private struct FlowChips: View {
         HStack(spacing: 8) {
             ForEach(items, id: \.1) { InfoChip(symbol: $0.0, text: $0.1) }
         }
+    }
+}
+
+private struct QualityCard: View {
+    let preset: QualityPreset
+    let selected: Bool
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Image(systemName: preset.symbol)
+                        .font(.title2.weight(.medium))
+                        .symbolEffect(.bounce, value: selected)
+                    Spacer()
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.tertiary))
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.tint))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(preset.title).font(.headline)
+                    Text(preset.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(selected ? AnyShapeStyle(.white.opacity(0.85)) : AnyShapeStyle(.secondary))
+                        .lineLimit(2, reservesSpace: true)
+                }
+                HStack(spacing: 3) {
+                    ForEach(0..<4) { i in
+                        Capsule()
+                            .fill(i <= QualityPreset.allCases.firstIndex(of: preset)!
+                                  ? (selected ? Color.white : Color.accentColor)
+                                  : Color.primary.opacity(0.12))
+                            .frame(height: 4)
+                    }
+                }
+            }
+            .foregroundStyle(selected ? .white : .primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .contentShape(.rect(cornerRadius: 22))
+        }
+        .buttonStyle(.plain)
+        .glassEffect(selected ? .regular.tint(.accentColor).interactive() : .regular.interactive(),
+                     in: .rect(cornerRadius: 22))
+        .shadow(color: selected ? Color.accentColor.opacity(0.4) : .clear, radius: 14, y: 6)
+        .scaleEffect(hover && !selected ? 1.02 : 1)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hover)
+        .onHover { hover = $0 }
     }
 }

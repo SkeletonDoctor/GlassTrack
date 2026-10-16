@@ -50,24 +50,17 @@ enum Entry {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    static var store: JobStore?
-    static var pending: [URL] = []
-
     func application(_ application: NSApplication, open urls: [URL]) {
         MainActor.assumeIsolated {
-            if let store = Self.store { store.pendingOpen = urls.first } else { Self.pending = urls }
+            // SwiftUI's onOpenURL usually handles this; it can also call us with an empty list.
+            if let url = urls.first { JobStore.shared.pendingOpen = url }
         }
     }
 }
 
 struct GlassTrackApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @State private var store: JobStore = {
-        let s = JobStore()
-        AppDelegate.store = s
-        s.pendingOpen = AppDelegate.pending.first
-        return s
-    }()
+    @State private var store = JobStore.shared
     @State private var toolchain = Toolchain()
 
     var body: some Scene {
@@ -76,7 +69,10 @@ struct GlassTrackApp: App {
                 .environment(store)
                 .environment(toolchain)
                 .frame(minWidth: 1040, minHeight: 680)
+                .onOpenURL { store.pendingOpen = $0 }
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
+        .handlesExternalEvents(matching: ["*"])
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unified)
         .commands {
@@ -98,6 +94,8 @@ struct GlassTrackApp: App {
 @MainActor
 @Observable
 final class JobStore {
+    static let shared = JobStore()
+
     var jobs: [TrackJob] = []
     var selection: TrackJob.ID?
     /// Footage opened via Finder / Dock, picked up by the New Track screen.
@@ -168,3 +166,4 @@ final class JobStore {
         NSSound(named: job.status == .finished ? "Glass" : "Basso")?.play()
     }
 }
+
