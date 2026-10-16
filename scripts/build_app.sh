@@ -3,8 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 APP=build/GlassTrack.app
-VERSION="${VERSION:-1.1}"
-BUILD="${BUILD:-2}"
+VERSION="${VERSION:-1.2}"
+BUILD="${BUILD:-3}"
 swift build -c release --arch arm64
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
