@@ -1,32 +1,40 @@
 import SwiftUI
 
+/// The job screen. Each section is its own view that reads only what it shows, so the
+/// frequent progress updates of a running solve redraw those sections and nothing else.
+/// (When this was one big view, every update rebuilt the Stop button and clicks on it
+/// could be lost for many seconds.)
 struct JobDetailView: View {
-    @Bindable var job: TrackJob
-    @Environment(JobStore.self) private var store
-    @State private var showLog = false
+    let job: TrackJob
 
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                header
+                HeaderCard(job: job)
+                    .overlay(alignment: .trailing) {
+                        JobActionButtons(job: job)
+                            .padding(.trailing, 20)
+                    }
                 HStack(alignment: .top, spacing: 20) {
-                    stageList
+                    StageListCard(job: job)
                         .frame(width: 330)
                     VStack(spacing: 20) {
-                        preview
-                        if let s = job.stats { statsGrid(s) }
+                        PreviewCard(job: job)
+                        StatsSection(job: job)
                     }
                 }
-                logPanel
+                LogPanel(job: job)
             }
             .padding(28)
         }
         .scrollContentBackground(.hidden)
     }
+}
 
-    // MARK: Header
+private struct HeaderCard: View {
+    let job: TrackJob
 
-    private var header: some View {
+    var body: some View {
         HStack(spacing: 22) {
             ZStack {
                 ProgressRing(progress: job.status == .finished ? 1 : job.overallProgress,
@@ -71,91 +79,18 @@ struct JobDetailView: View {
                 }
             }
             Spacer(minLength: 0)
-            actionButtons
         }
         .padding(20)
+        .padding(.trailing, 250)   // room for the buttons layered on top
         .glassCard(30)
         .animation(.smooth, value: job.status)
     }
+}
 
-    @Namespace private var glassNS
+private struct StageListCard: View {
+    let job: TrackJob
 
-    private var actionButtons: some View {
-        GlassEffectContainer(spacing: 12) {
-            VStack(alignment: .trailing, spacing: 10) {
-                switch job.status {
-                case .running, .idle:
-                    Button(role: .destructive) { job.cancel(); if job.status == .idle { store.remove(job) } } label: {
-                        Label("Stop", systemImage: "stop.fill")
-                            .padding(.horizontal, 6)
-                    }
-                    .buttonStyle(.liquidGlass(.destructive))
-                    .controlSize(.large)
-                    .glassEffectID("primary", in: glassNS)
-                case .finished:
-                    if let blend = job.blendURL {
-                        Button {
-                            NSWorkspace.shared.open(blend)
-                        } label: {
-                            Label("Open in Blender", systemImage: "cube.transparent.fill")
-                                .font(.headline)
-                                .padding(.horizontal, 8)
-                        }
-                        .buttonStyle(.liquidGlass(.primary))
-                        .controlSize(.extraLarge)
-                        .glassEffectID("primary", in: glassNS)
-                    }
-                    HStack(spacing: 10) {
-                        Button { NSWorkspace.shared.activateFileViewerSelecting([job.projectDir]) } label: {
-                            Image(systemName: "folder")
-                                .frame(width: 22, height: 22)
-                        }
-                        .help("Show project files in Finder")
-                        .glassEffectID("files", in: glassNS)
-                        Button { copyScriptCommand() } label: {
-                            Image(systemName: "doc.on.doc")
-                                .frame(width: 22, height: 22)
-                        }
-                        .help("Copy the Blender import command")
-                        .glassEffectID("script", in: glassNS)
-                        Button { store.retry(job, fromScratch: true) } label: {
-                            Image(systemName: "arrow.clockwise")
-                                .frame(width: 22, height: 22)
-                        }
-                        .help("Solve again")
-                        .glassEffectID("retry", in: glassNS)
-                    }
-                    .buttonStyle(.liquidGlass(circle: true))
-                    .controlSize(.large)
-                case .failed, .cancelled:
-                    Button { store.retry(job) } label: {
-                        Label("Try Again", systemImage: "arrow.clockwise")
-                            .font(.headline)
-                            .padding(.horizontal, 8)
-                    }
-                    .buttonStyle(.liquidGlass(.primary))
-                    .controlSize(.extraLarge)
-                    .glassEffectID("primary", in: glassNS)
-                    Button { NSWorkspace.shared.activateFileViewerSelecting([job.projectDir]) } label: {
-                        Label("Show Files", systemImage: "folder")
-                    }
-                    .buttonStyle(.liquidGlass())
-                    .glassEffectID("files", in: glassNS)
-                }
-            }
-        }
-        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: job.status)
-    }
-
-    private func copyScriptCommand() {
-        let cmd = "'\(ToolLocator.blender() ?? "blender")' --python '\(job.projectDir.appendingPathComponent(BlenderScript.fileName).path)'"
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(cmd, forType: .string)
-    }
-
-    // MARK: Stages
-
-    private var stageList: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionTitle(title: "Pipeline", symbol: "list.bullet.indent",
                          trailing: "\(job.stages.filter { $0.state == .done }.count)/\(job.stages.filter { $0.state != .skipped }.count)")
@@ -169,10 +104,12 @@ struct JobDetailView: View {
         .padding(16)
         .glassCard(26)
     }
+}
 
-    // MARK: Preview
+private struct PreviewCard: View {
+    let job: TrackJob
 
-    private var preview: some View {
+    var body: some View {
         ZStack {
             if let model = job.model {
                 PointCloudView(model: model)
@@ -211,8 +148,13 @@ struct JobDetailView: View {
         .padding(6)
         .glassCard(28)
     }
+}
 
-    private func statsGrid(_ s: SolveStats) -> some View {
+private struct StatsSection: View {
+    let job: TrackJob
+
+    var body: some View {
+        if let s = job.stats {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 2), spacing: 12) {
             StatTile(value: "\(s.registeredImages)/\(s.totalImages)", label: "Frames solved", symbol: "camera.fill")
             StatTile(value: s.points.formatted(), label: "3D points", symbol: "circle.grid.3x3.fill")
@@ -221,11 +163,15 @@ struct JobDetailView: View {
             StatTile(value: s.meanTrackLength.map { String(format: "%.1f", $0) } ?? "–",
                      label: "Avg. track length", symbol: "point.topleft.down.to.point.bottomright.curvepath")
         }
+        }
     }
+}
 
-    // MARK: Log
+private struct LogPanel: View {
+    let job: TrackJob
+    @State private var showLog = false
 
-    private var logPanel: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Button {
                 withAnimation(.smooth) { showLog.toggle() }
@@ -409,5 +355,76 @@ private struct StageRow: View {
         case .pending:
             Image(systemName: stage.id.symbol).font(.caption).foregroundStyle(.secondary)
         }
+    }
+}
+
+/// Header buttons. Kept in their own view so the frequent progress updates of a running
+/// solve don't redraw them (which could swallow a click on Stop).
+private struct JobActionButtons: View {
+    let job: TrackJob
+    @Environment(JobStore.self) private var store
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 10) {
+                switch job.status {
+                case .running, .idle:
+                    Button(role: .destructive) { job.cancel(); if job.status == .idle { store.remove(job) } } label: {
+                        Label("Stop", systemImage: "stop.fill")
+                            .padding(.horizontal, 6)
+                    }
+                    .buttonStyle(.liquidGlass(.destructive))
+                    .controlSize(.large)
+                case .finished:
+                    if let blend = job.blendURL {
+                        Button {
+                            NSWorkspace.shared.open(blend)
+                        } label: {
+                            Label("Open in Blender", systemImage: "cube.transparent.fill")
+                                .font(.headline)
+                                .padding(.horizontal, 8)
+                        }
+                        .buttonStyle(.liquidGlass(.primary))
+                        .controlSize(.extraLarge)
+                    }
+                    HStack(spacing: 10) {
+                        Button { NSWorkspace.shared.activateFileViewerSelecting([job.projectDir]) } label: {
+                            Image(systemName: "folder")
+                                .frame(width: 22, height: 22)
+                        }
+                        .help("Show project files in Finder")
+                        Button { copyScriptCommand() } label: {
+                            Image(systemName: "doc.on.doc")
+                                .frame(width: 22, height: 22)
+                        }
+                        .help("Copy the Blender import command")
+                        Button { store.retry(job, fromScratch: true) } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .frame(width: 22, height: 22)
+                        }
+                        .help("Solve again")
+                    }
+                    .buttonStyle(.liquidGlass(circle: true))
+                    .controlSize(.large)
+                case .failed, .cancelled:
+                    Button { store.retry(job) } label: {
+                        Label("Try Again", systemImage: "arrow.clockwise")
+                            .font(.headline)
+                            .padding(.horizontal, 8)
+                    }
+                    .buttonStyle(.liquidGlass(.primary))
+                    .controlSize(.extraLarge)
+                    Button { NSWorkspace.shared.activateFileViewerSelecting([job.projectDir]) } label: {
+                        Label("Show Files", systemImage: "folder")
+                    }
+                    .buttonStyle(.liquidGlass())
+                }
+        }
+        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: job.status)
+    }
+
+    private func copyScriptCommand() {
+        let cmd = "'\(ToolLocator.blender() ?? "blender")' --python '\(job.projectDir.appendingPathComponent(BlenderScript.fileName).path)'"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(cmd, forType: .string)
     }
 }

@@ -62,7 +62,14 @@ enum ProcessRunner {
                 }
             }
         } onCancel: {
-            if process.isRunning { process.terminate() }
+            // COLMAP treats SIGTERM as a request for a graceful shutdown and can keep working
+            // for a long time (e.g. finishing feature extraction), so force-kill shortly after.
+            guard process.isRunning else { return }
+            let pid = process.processIdentifier
+            process.terminate()
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.75) {
+                if process.isRunning { kill(pid, SIGKILL) }
+            }
         }
 
         // Drain anything left in the pipe.

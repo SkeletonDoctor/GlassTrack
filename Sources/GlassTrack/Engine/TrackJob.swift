@@ -158,6 +158,7 @@ final class TrackJob: Identifiable {
 
     func start() {
         guard status != .running else { return }
+        status = .running   // set now so a second pump() can't start this job twice
         task = Task { await run() }
     }
 
@@ -471,10 +472,10 @@ final class TrackJob: Identifiable {
                         "--Mapper.ba_refine_focal_length", "1",
                         "--Mapper.ba_refine_extra_params", settings.cameraModel == .pinhole || settings.cameraModel == .simplePinhole ? "0" : "1"]
             try await exec(colmap, args + Self.logArgs, stage: .mapping) { line, job in
-                // e.g. "Registering image #42 (17)"
+                // COLMAP 3: "Registering image #42 (17)"; COLMAP 4: "Registering image #229 (num_reg_frames=90)"
                 if line.contains("Registering image #"),
                    let open = line.lastIndex(of: "("), let close = line.lastIndex(of: ")"), open < close,
-                   let n = Int(line[line.index(after: open)..<close]) {
+                   let n = Int(line[line.index(after: open)..<close].split(separator: "=").last ?? "") {
                     job.update(.mapping) {
                         $0.fraction = Double(n) / Double(max(total, 1))
                         $0.detail = "Registered \(n) of \(total) frames"
@@ -640,17 +641,26 @@ final class TrackJob: Identifiable {
     private func exec(_ tool: String, _ args: [String], stage: StageID,
                       parse: @escaping (String, TrackJob) -> Bool) async throws {
         emit("$ \(URL(fileURLWithPath: tool).lastPathComponent) \(args.prefix(1).joined())")
-        try await ProcessRunner.run(tool, args, workingDirectory: projectDir) { [weak self] line in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    let hide = parse(line, self)
-                    if !hide { self.emit(Self.cleanLog(line)) }
+        // Tools like COLMAP print many lines per second; hand them to the UI in batches
+        // (~10 per second) so the screen isn't redrawn for every line.
+        let batcher = LineBatcher { [weak self] lines in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                for line in lines where !parse(line, self) {
+                    self.emit(Self.cleanLog(line))
                 }
             }
         }
-        // Let queued line handlers run before the stage completes.
-        await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+        try await ProcessRunner.run(tool, args, workingDirectory: projectDir) { line in
+            batcher.add(line)
+        }
+        // Deliver whatever is still queued before the stage completes.
+        await withCheckedContinuation { c in
+            DispatchQueue.main.async {
+                batcher.flush()
+                c.resume()
+            }
+        }
     }
 
     func update(_ id: StageID, _ change: (inout StageProgress) -> Void) {
@@ -731,9 +741,41 @@ final class TrackJob: Identifiable {
     }
 }
 
+/// Collects lines from a background reader and delivers them on the main queue at most every 0.1 s.
+private final class LineBatcher: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: [String] = []
+    private var scheduled = false
+    private let deliver: ([String]) -> Void
+
+    init(deliver: @escaping ([String]) -> Void) { self.deliver = deliver }
+
+    func add(_ line: String) {
+        lock.lock()
+        pending.append(line)
+        let schedule = !scheduled
+        scheduled = true
+        lock.unlock()
+        if schedule {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.flush() }
+        }
+    }
+
+    /// Must be called on the main queue.
+    func flush() {
+        lock.lock()
+        let lines = pending
+        pending.removeAll()
+        scheduled = false
+        lock.unlock()
+        if !lines.isEmpty { deliver(lines) }
+    }
+}
+
 private final class OutputBox: @unchecked Sendable {
     private let lock = NSLock()
     private var lines: [String] = []
     func append(_ s: String) { lock.lock(); lines.append(s); lock.unlock() }
     var text: String { lock.lock(); defer { lock.unlock() }; return lines.joined(separator: "\n") }
 }
+

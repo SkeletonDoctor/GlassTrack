@@ -6,22 +6,21 @@ struct AmbientBackground: View {
 
     var body: some View {
         ZStack {
-            TimelineView(.animation(minimumInterval: 1 / 20)) { ctx in
-                let t = Float(ctx.date.timeIntervalSinceReferenceDate * 0.08)
-                MeshGradient(
-                    width: 3, height: 3,
-                    points: [
-                        [0, 0], [0.5 + 0.08 * sin(t), 0], [1, 0],
-                        [0, 0.5 + 0.1 * cos(t * 1.3)], [0.5 + 0.12 * cos(t), 0.5 + 0.12 * sin(t * 0.9)], [1, 0.5 + 0.1 * sin(t * 1.1)],
-                        [0, 1], [0.5 + 0.08 * cos(t * 0.7), 1], [1, 1],
-                    ],
-                    colors: [
-                        .indigo.opacity(0.55), .blue.opacity(0.45), .cyan.opacity(0.4),
-                        .purple.opacity(0.4), .teal.opacity(0.3), .blue.opacity(0.4),
-                        .mint.opacity(0.3), .indigo.opacity(0.45), .purple.opacity(0.5),
-                    ]
-                )
-            }
+            // Static on purpose: animating the backdrop forces every glass panel above it to
+            // re-render its blur each frame, which starved input handling during a solve.
+            MeshGradient(
+                width: 3, height: 3,
+                points: [
+                    [0, 0], [0.55, 0], [1, 0],
+                    [0, 0.55], [0.45, 0.5], [1, 0.45],
+                    [0, 1], [0.5, 1], [1, 1],
+                ],
+                colors: [
+                    .indigo.opacity(0.55), .blue.opacity(0.45), .cyan.opacity(0.4),
+                    .purple.opacity(0.4), .teal.opacity(0.3), .blue.opacity(0.4),
+                    .mint.opacity(0.3), .indigo.opacity(0.45), .purple.opacity(0.5),
+                ]
+            )
             if let image {
                 Color.clear
                     .overlay {
@@ -37,6 +36,8 @@ struct AmbientBackground: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
