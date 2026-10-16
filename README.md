@@ -1,6 +1,6 @@
 # GlassTrack
 
-A native macOS Liquid Glass app that turns footage into a solved camera for Blender.
+A native macOS app that turns footage into a solved camera for Blender.
 It runs [COLMAP](https://colmap.github.io) and FFmpeg in the background.
 
 ![A finished track: solved camera path and point cloud, solve-quality chart and exports](docs/screenshots/results.png)
