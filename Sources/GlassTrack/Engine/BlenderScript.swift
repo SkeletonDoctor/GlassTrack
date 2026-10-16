@@ -294,9 +294,146 @@ def main():
     scene.frame_set(frames[0])
     print("GlassTrack: imported %d cameras, %d points" % (len(images), len(points)))
 
+    if meta.get("exports", True) and args["out"]:
+        try:
+            export_all(scene, cam_obj, pc if points else None, name, os.path.join(root, "exports"))
+        except Exception as e:
+            print("GlassTrack: export failed:", e)
+        scene.frame_set(frames[0])
+
     if args["out"]:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(args["out"]))
         print("GlassTrack: saved", args["out"])
+
+
+# --- Exports for other applications -------------------------------------------------------
+
+def world_samples(scene, cam_obj):
+    """(frame, world matrix, lens) for every frame of the scene."""
+    out = []
+    for f in range(scene.frame_start, scene.frame_end + 1):
+        scene.frame_set(f)
+        out.append((f, cam_obj.matrix_world.copy(), cam_obj.data.lens))
+    return out
+
+
+def export_all(scene, cam_obj, cloud, name, folder):
+    os.makedirs(folder, exist_ok=True)
+    samples = world_samples(scene, cam_obj)
+    w, h = scene.render.resolution_x, scene.render.resolution_y
+    fps = scene.render.fps / scene.render.fps_base
+
+    # A world-space copy of the camera (no parent), baked on every frame, for FBX / Alembic.
+    baked = bpy.data.objects.new(name + "_Camera", cam_obj.data)
+    scene.collection.objects.link(baked)
+    baked.rotation_mode = "XYZ"
+    prev = None
+    for f, m, lens in samples:
+        loc, rot, _ = m.decompose()
+        eul = rot.to_euler("XYZ", prev) if prev else rot.to_euler("XYZ")
+        prev = eul
+        baked.location = loc
+        baked.rotation_euler = eul
+        baked.keyframe_insert("location", frame=f)
+        baked.keyframe_insert("rotation_euler", frame=f)
+
+    def select_only(objs):
+        bpy.ops.object.select_all(action="DESELECT")
+        for o in objs:
+            o.select_set(True)
+        bpy.context.view_layer.objects.active = objs[0]
+
+    try:
+        select_only([baked])
+        bpy.ops.export_scene.fbx(filepath=os.path.join(folder, name + "_camera.fbx"), use_selection=True,
+                                 object_types={"CAMERA"}, bake_anim=True, bake_anim_use_all_actions=False,
+                                 bake_anim_use_nla_strips=False, bake_anim_force_startend_keying=True,
+                                 add_leaf_bones=False)
+        print("GlassTrack: exported FBX")
+    except Exception as e:
+        print("GlassTrack: FBX export failed:", e)
+    try:
+        select_only([baked] + ([cloud] if cloud else []))
+        bpy.ops.wm.alembic_export(filepath=os.path.join(folder, name + "_camera.abc"), selected=True,
+                                  start=scene.frame_start, end=scene.frame_end)
+        print("GlassTrack: exported Alembic")
+    except Exception as e:
+        print("GlassTrack: Alembic export failed:", e)
+    bpy.data.objects.remove(baked, do_unlink=True)
+
+    write_nuke(samples, cam_obj.data, w, h, name, folder)
+    write_after_effects(samples, cam_obj.data, w, h, fps, scene, name, folder)
+    print("GlassTrack: exported Nuke and After Effects")
+
+
+def write_nuke(samples, cam_data, w, h, name, folder):
+    # Nuke is Y-up: Blender (x, y, z) -> Nuke (x, z, -y). Camera axes match (looks down -Z, +Y up).
+    to_nuke = Matrix(((1, 0, 0), (0, 0, 1), (0, -1, 0)))
+    rows = []
+    for f, m, lens in samples:
+        loc = to_nuke @ m.to_translation()
+        rot = (to_nuke @ m.to_3x3().normalized()).to_euler("ZXY")   # Nuke's default rot_order ZXY
+        rows.append((f, loc, [math.degrees(a) for a in rot], lens))
+    with open(os.path.join(folder, name + "_camera.chan"), "w") as fh:
+        for f, loc, r, lens in rows:
+            fh.write("%d %.6f %.6f %.6f %.6f %.6f %.6f\n" % (f, loc.x, loc.y, loc.z, r[0], r[1], r[2]))
+
+    big = float(max(w, h))
+    hap = cam_data.sensor_width * w / big
+    vap = cam_data.sensor_width * h / big
+    def curve(values):
+        return "{curve x%d %s}" % (rows[0][0], " ".join("%.6f" % v for v in values))
+    with open(os.path.join(folder, name + "_camera.nk"), "w") as fh:
+        fh.write("Camera3 {\n")
+        fh.write(" rot_order ZXY\n")
+        fh.write(" translate {%s %s %s}\n" % (curve([r[1].x for r in rows]), curve([r[1].y for r in rows]),
+                                              curve([r[1].z for r in rows])))
+        fh.write(" rotate {%s %s %s}\n" % (curve([r[2][0] for r in rows]), curve([r[2][1] for r in rows]),
+                                           curve([r[2][2] for r in rows])))
+        lenses = [r[3] for r in rows]
+        fh.write(" focal %s\n" % (("{%s}" % curve(lenses)) if max(lenses) - min(lenses) > 1e-4 else "%.6f" % lenses[0]))
+        fh.write(" haperture %.6f\n vaperture %.6f\n" % (hap, vap))
+        fh.write(" name %s_Camera\n}\n" % name.replace(" ", "_"))
+
+
+def write_after_effects(samples, cam_data, w, h, fps, scene, name, folder):
+    # Same conventions as Blender's long-standing After Effects exporter: 100 px per unit,
+    # AE X = X, AE Y = -Z, AE Z = Y; orientation from a ZYX euler with the camera's X corrected by -90.
+    ae_size = 100.0
+    big = float(max(w, h))
+    times, pos, ori, zoom = [], [], [], []
+    for f, m, lens in samples:
+        loc = m.to_translation()
+        r = m.to_euler("ZYX")
+        times.append("%.6f" % ((f - scene.frame_start) / fps))
+        pos.append("[%.4f,%.4f,%.4f]" % (loc.x * ae_size + w / 2.0, -loc.z * ae_size + h / 2.0, loc.y * ae_size))
+        ori.append("[%.4f,%.4f,%.4f]" % (math.degrees(r.x) - 90.0, -math.degrees(r.y), -math.degrees(r.z)))
+        # zoom (px) = lens * dimension / sensor, measured along the larger side (sensor_fit AUTO)
+        zoom.append("%.4f" % (lens * (w if w >= h else h) / cam_data.sensor_width))
+    duration = (scene.frame_end - scene.frame_start + 1) / fps
+    plate = ""
+    clip = scene.active_clip
+    if clip:
+        plate = bpy.path.abspath(clip.filepath).replace("\\", "/")
+    js = []
+    js.append("// GlassTrack camera for After Effects. File > Scripts > Run Script File…")
+    js.append("(function () {")
+    js.append("app.beginUndoGroup('GlassTrack camera');")
+    js.append("var comp = app.project.items.addComp(%s, %d, %d, 1, %.6f, %.6f);" % (json.dumps(name + " Track"), w, h, duration, fps))
+    if plate:
+        js.append("try { var item = app.project.importFile(new ImportOptions(new File(%s)));" % json.dumps(plate))
+        js.append("  var plate = comp.layers.add(item); plate.startTime = 0; } catch (e) {}")
+    js.append("var cam = comp.layers.addCamera(%s, [%f, %f]);" % (json.dumps(name + " Camera"), w / 2.0, h / 2.0))
+    js.append("cam.autoOrient = AutoOrientType.NO_AUTO_ORIENT;")
+    js.append("var t = [%s];" % ",".join(times))
+    js.append("cam.property('position').setValuesAtTimes(t, [%s]);" % ",".join(pos))
+    js.append("cam.property('orientation').setValuesAtTimes(t, [%s]);" % ",".join(ori))
+    js.append("cam.property('zoom').setValuesAtTimes(t, [%s]);" % ",".join(zoom))
+    js.append("comp.openInViewer();")
+    js.append("app.endUndoGroup();")
+    js.append("})();")
+    with open(os.path.join(folder, name + "_camera.jsx"), "w") as fh:
+        fh.write("\n".join(js) + "\n")
 
 
 main()
