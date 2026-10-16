@@ -52,6 +52,7 @@ final class TrackJob: Identifiable {
     var sparseDir: URL { projectDir.appendingPathComponent("sparse", isDirectory: true) }
     var textModelDir: URL { projectDir.appendingPathComponent("sparse_txt", isDirectory: true) }
     var undistortedDir: URL { projectDir.appendingPathComponent("undistorted", isDirectory: true) }
+    var masksDir: URL { projectDir.appendingPathComponent("masks", isDirectory: true) }
 
     init(input: URL, settings: JobSettings, outputRoot: URL) {
         id = UUID()
@@ -87,6 +88,10 @@ final class TrackJob: Identifiable {
         platePath = s.platePath
         if let w = s.extractWidth, let h = s.extractHeight { extractSize = (w, h) }
         folderName = s.folderName
+        // Saves from older versions may lack newer stages; add them in pipeline order.
+        stages = StageID.allCases.map { id in
+            s.stages.first { $0.id == id } ?? StageProgress(id: id, state: id == .masks ? .skipped : .pending)
+        }
 
         // A solve that was running when the app quit resumes from its last finished stage.
         if status == .running {
@@ -226,6 +231,7 @@ final class TrackJob: Identifiable {
             stages = StageID.allCases.map { StageProgress(id: $0) }
         }
         if !settings.undistort { setState(.undistort, .skipped) }
+        if !settings.maskPeople { setState(.masks, .skipped) }
         if !settings.buildBlend || ToolLocator.blender() == nil { setState(.blender, .skipped) }
         onPersist?()
 
@@ -235,6 +241,7 @@ final class TrackJob: Identifiable {
             emit(resuming ? "Resuming in \(projectDir.path)" : "Project folder: \(projectDir.path)")
 
             if !isDone(.extract) { try await stage(.extract) { try await self.extractFrames() } }
+            if settings.maskPeople && !isDone(.masks) { try await stage(.masks) { try await self.makeMasks() } }
             if !isDone(.features) { try await stage(.features) { try await self.featureExtraction(colmap) } }
             if !isDone(.matching) { try await stage(.matching) { try await self.matching(colmap) } }
             let best = isDone(.mapping)
@@ -413,6 +420,20 @@ final class TrackJob: Identifiable {
 
     @ObservationIgnored private var frameMap: [String: Int] = [:]
 
+    // 1b. Masks
+
+    private func makeMasks() async throws {
+        let r = try await PersonMasker.makeMasks(imagesDir: imagesDir, masksDir: masksDir) { [weak self] fraction, detail in
+            self?.update(.masks) { $0.fraction = fraction; $0.detail = detail }
+        }
+        emit("Masked people in \(r.framesWithPeople) of \(r.written) frames.")
+        update(.masks) {
+            $0.detail = r.framesWithPeople == 0 ? "No people found" : "People masked in \(r.framesWithPeople) of \(r.written) frames"
+        }
+        // Features must be recomputed with the new masks.
+        update(.features) { $0 = StageProgress(id: .features) }
+    }
+
     // 2. Features
 
     private func featureExtraction(_ colmap: String) async throws {
@@ -428,6 +449,9 @@ final class TrackJob: Identifiable {
                     "--SiftExtraction.max_num_features", "\(q.maxFeatures)"]
         if q == .high || q == .ultra {
             args += ["--SiftExtraction.estimate_affine_shape", "0", "--SiftExtraction.domain_size_pooling", "1"]
+        }
+        if settings.maskPeople && FileManager.default.fileExists(atPath: masksDir.path) {
+            args += ["--ImageReader.mask_path", masksDir.path]
         }
         try await exec(colmap, args + Self.logArgs, stage: .features) { line, job in
             if let (i, n) = Self.bracketProgress(line) {

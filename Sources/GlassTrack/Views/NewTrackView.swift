@@ -306,6 +306,11 @@ private struct DraftEditor: View {
                         Toggle("", isOn: $job.settings.singleCamera).toggleStyle(.liquidGlass).labelsHidden()
                     }
                     Hairline()
+                    SettingRow(symbol: "person.crop.rectangle", color: .pink, title: "Mask people",
+                               subtitle: "Ignore actors and passers-by when tracking") {
+                        Toggle("", isOn: $job.settings.maskPeople).toggleStyle(.liquidGlass).labelsHidden()
+                    }
+                    Hairline()
                     SettingRow(symbol: "rectangle.dashed", color: .cyan, title: "Undistorted frames",
                                subtitle: "Also export lens-corrected images") {
                         Toggle("", isOn: $job.settings.undistort).toggleStyle(.liquidGlass).labelsHidden()

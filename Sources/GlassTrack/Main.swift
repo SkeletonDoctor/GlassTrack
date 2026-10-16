@@ -15,13 +15,14 @@ enum Entry {
     /// Headless mode: GlassTrack --cli <video|folder> <outputDir> [preview|balanced|high|ultra] [step]
     static func runCLI(_ a: [String]) {
         guard a.count >= 2 else {
-            print("usage: GlassTrack --cli <video|folder> <outputDir> [quality] [frameStep]")
+            print("usage: GlassTrack --cli <video|folder> <outputDir> [quality] [frameStep] [mask]")
             exit(2)
         }
         MainActor.assumeIsolated {
             var s = JobSettings()
             if a.count > 2, let q = QualityPreset(rawValue: a[2]) { s.quality = q }
             if a.count > 3, let n = Int(a[3]) { s.frameStep = n }
+            if a.dropFirst(4).contains("mask") { s.maskPeople = true }
             s.undistort = false
             let job = TrackJob(input: URL(fileURLWithPath: a[0]), settings: s,
                                outputRoot: URL(fileURLWithPath: a[1]))

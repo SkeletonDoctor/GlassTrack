@@ -132,18 +132,47 @@ struct JobSettings: Codable, Equatable {
     var undistort: Bool = false
     var buildBlend: Bool = true
     var useGPU: Bool = false
+    var maskPeople: Bool = false
+
+    init() {}
+
+    /// Tolerant decoding: settings saved by older versions (missing newer keys) keep their
+    /// values and fill the rest with defaults.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = JobSettings()
+        func v<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            (try? c.decodeIfPresent(T.self, forKey: key)) ?? fallback
+        }
+        quality = v(.quality, d.quality)
+        sampling = v(.sampling, d.sampling)
+        frameStep = v(.frameStep, d.frameStep)
+        targetFPS = v(.targetFPS, d.targetFPS)
+        maxFrames = v(.maxFrames, d.maxFrames)
+        jpegQuality = v(.jpegQuality, d.jpegQuality)
+        cameraModel = v(.cameraModel, d.cameraModel)
+        singleCamera = v(.singleCamera, d.singleCamera)
+        matcher = v(.matcher, d.matcher)
+        mapper = v(.mapper, d.mapper)
+        loopDetection = v(.loopDetection, d.loopDetection)
+        undistort = v(.undistort, d.undistort)
+        buildBlend = v(.buildBlend, d.buildBlend)
+        useGPU = v(.useGPU, d.useGPU)
+        maskPeople = v(.maskPeople, d.maskPeople)
+    }
 }
 
 // MARK: - Pipeline stages
 
 enum StageID: String, CaseIterable, Identifiable, Codable {
-    case extract, features, matching, mapping, undistort, export, blender
+    case extract, masks, features, matching, mapping, undistort, export, blender
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .extract: "Extract Frames"
+        case .masks: "Mask People"
         case .features: "Detect Features"
         case .matching: "Match Features"
         case .mapping: "Solve Camera"
@@ -156,6 +185,7 @@ enum StageID: String, CaseIterable, Identifiable, Codable {
     var symbol: String {
         switch self {
         case .extract: "film.stack"
+        case .masks: "person.crop.rectangle"
         case .features: "scope"
         case .matching: "point.3.connected.trianglepath.dotted"
         case .mapping: "camera.metering.matrix"
@@ -169,6 +199,7 @@ enum StageID: String, CaseIterable, Identifiable, Codable {
     var weight: Double {
         switch self {
         case .extract: 0.08
+        case .masks: 0.06
         case .features: 0.2
         case .matching: 0.22
         case .mapping: 0.35
