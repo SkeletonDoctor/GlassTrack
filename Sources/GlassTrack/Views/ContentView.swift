@@ -46,28 +46,43 @@ struct SidebarView: View {
     @Environment(Toolchain.self) private var toolchain
 
     var body: some View {
-        @Bindable var store = store
-        List(selection: $store.selection) {
-            Section {
-                Button {
-                    store.selection = nil
-                } label: {
-                    Label("New Track", systemImage: "plus.viewfinder")
-                        .font(.body.weight(.medium))
-                }
-                .buttonStyle(.plain)
-                .padding(.vertical, 4)
-            }
+        ScrollView {
+            GlassEffectContainer(spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Button {
+                        store.selection = nil
+                    } label: {
+                        Label("New Track", systemImage: "plus.viewfinder")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.liquidGlass(store.selection == nil ? .primary : .secondary))
+                    .padding(.bottom, 10)
 
-            Section("Tracks") {
-                if store.jobs.isEmpty {
-                    Text("No tracks yet")
+                    Text("Tracks")
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .font(.callout)
-                }
-                ForEach(store.jobs) { job in
-                    JobRow(job: job)
-                        .tag(job.id)
+                        .padding(.leading, 6)
+
+                    if store.jobs.isEmpty {
+                        Text("No tracks yet")
+                            .foregroundStyle(.tertiary)
+                            .font(.callout)
+                            .padding(.leading, 6)
+                    }
+                    ForEach(store.jobs) { job in
+                        let selected = store.selection == job.id
+                        Button {
+                            withAnimation(.smooth) { store.selection = job.id }
+                        } label: {
+                            JobRow(job: job, selected: selected)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                                .contentShape(.rect(cornerRadius: 16))
+                        }
+                        .buttonStyle(.plain)
+                        .glassEffect(selected ? .regular.tint(Color.accentColor.opacity(0.35)).interactive()
+                                              : .regular.interactive(),
+                                     in: .rect(cornerRadius: 16, style: .continuous))
                         .contextMenu {
                             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([job.projectDir]) }
                             if job.status == .running {
@@ -76,10 +91,13 @@ struct SidebarView: View {
                             Divider()
                             Button("Remove from List", role: .destructive) { store.remove(job) }
                         }
+                    }
                 }
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
             }
         }
-        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
         .safeAreaInset(edge: .bottom) {
             ToolStatusFooter()
                 .padding(12)
@@ -89,6 +107,7 @@ struct SidebarView: View {
 
 private struct JobRow: View {
     let job: TrackJob
+    var selected = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -104,17 +123,28 @@ private struct JobRow: View {
             .clipShape(.rect(cornerRadius: 6))
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(job.name).lineLimit(1).font(.callout.weight(.medium))
+                Text(job.name).lineLimit(1).font(.callout.weight(.semibold))
+                    .foregroundStyle(selected ? .white : .primary)
+                    .shadow(color: selected ? .black.opacity(0.25) : .clear, radius: 1, y: 0.5)
                 if job.status == .running {
-                    GlassProgressBar(value: job.overallProgress, height: 4)
-                        .padding(.top, 2)
+                    Text("Tracking · \(Int(job.overallProgress * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(selected ? AnyShapeStyle(.white.opacity(0.85)) : AnyShapeStyle(.secondary))
+                        .contentTransition(.numericText())
                 } else {
                     HStack(spacing: 4) {
                         Circle().fill(job.status.color).frame(width: 6, height: 6)
                         Text(job.status == .idle ? "Queued" : job.status.label)
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption)
+                            .foregroundStyle(selected ? AnyShapeStyle(.white.opacity(0.85)) : AnyShapeStyle(.secondary))
                     }
                 }
+            }
+            Spacer(minLength: 0)
+            if job.status == .running {
+                ProgressRing(progress: job.overallProgress, lineWidth: 3, tint: selected ? .white : .accentColor)
+                    .frame(width: 20, height: 20)
+                    .padding(.trailing, 2)
             }
         }
         .padding(.vertical, 2)

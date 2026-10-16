@@ -44,12 +44,12 @@ struct SetupView: View {
 
                 HStack(spacing: 12) {
                     Button("Check Again") { toolchain.refresh() }
-                        .buttonStyle(.glass)
+                        .buttonStyle(.liquidGlass())
                         .controlSize(.large)
                         .disabled(toolchain.installing)
                     if toolchain.installing {
                         Button("Stop") { installTask?.cancel() }
-                            .buttonStyle(.glass)
+                            .buttonStyle(.liquidGlass())
                             .controlSize(.large)
                     } else {
                         Button {
@@ -60,7 +60,7 @@ struct SetupView: View {
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 4)
                         }
-                        .buttonStyle(.glassProminent)
+                        .buttonStyle(.liquidGlass(.primary))
                         .controlSize(.extraLarge)
                     }
                 }
@@ -132,7 +132,7 @@ private struct ToolRow: View {
                     .foregroundStyle(.green)
                     .font(.callout.weight(.medium))
             } else if tool == .blender {
-                Toggle("Install", isOn: $includeBlender).toggleStyle(.switch)
+                Toggle("Install", isOn: $includeBlender).toggleStyle(.liquidGlass)
             } else {
                 Label("Missing", systemImage: "arrow.down.circle")
                     .foregroundStyle(.orange)

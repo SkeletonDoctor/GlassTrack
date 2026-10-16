@@ -65,6 +65,7 @@ struct StatusPill: View {
     }
 }
 
+/// Round progress indicator; pass a negative `progress` for an indeterminate spinning arc.
 struct ProgressRing: View {
     var progress: Double
     var lineWidth: CGFloat = 10
@@ -72,18 +73,29 @@ struct ProgressRing: View {
 
     var body: some View {
         ZStack {
-            Circle().stroke(.primary.opacity(0.08), lineWidth: lineWidth)
+            Circle().stroke(.primary.opacity(0.1), lineWidth: lineWidth)
                 .overlay(Circle().stroke(.black.opacity(0.12), lineWidth: 1).blur(radius: 1).padding(lineWidth / 2))
-            Circle()
-                .trim(from: 0, to: max(0.001, progress))
-                .stroke(
-                    AngularGradient(colors: [tint.opacity(0.6), tint, .cyan], center: .center),
-                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-                .shadow(color: tint.opacity(0.55), radius: lineWidth * 0.8)
-                .animation(.spring(response: 0.6, dampingFraction: 0.85), value: progress)
+            if progress < 0 {
+                TimelineView(.animation) { ctx in
+                    let angle = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.1) / 1.1 * 360
+                    arc(0.28).rotationEffect(.degrees(angle - 90))
+                }
+            } else {
+                arc(max(0.001, min(progress, 1)))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.spring(response: 0.6, dampingFraction: 0.85), value: progress)
+            }
         }
+    }
+
+    private func arc(_ to: Double) -> some View {
+        Circle()
+            .trim(from: 0, to: to)
+            .stroke(
+                AngularGradient(colors: [tint.opacity(0.6), tint, tint.mix(with: .cyan, by: 0.5)], center: .center),
+                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+            )
+            .shadow(color: tint.opacity(0.55), radius: lineWidth * 0.8)
     }
 }
 

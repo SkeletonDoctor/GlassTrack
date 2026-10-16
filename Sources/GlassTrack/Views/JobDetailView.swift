@@ -74,14 +74,6 @@ struct JobDetailView: View {
             actionButtons
         }
         .padding(20)
-        .overlay(alignment: .bottom) {
-            if job.status == .running {
-                GlassProgressBar(value: job.overallProgress, height: 5)
-                    .padding(.horizontal, 28)
-                    .padding(.bottom, 10)
-                    .transition(.opacity)
-            }
-        }
         .glassCard(30)
         .animation(.smooth, value: job.status)
     }
@@ -97,10 +89,8 @@ struct JobDetailView: View {
                         Label("Stop", systemImage: "stop.fill")
                             .padding(.horizontal, 6)
                     }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.capsule)
+                    .buttonStyle(.liquidGlass(.destructive))
                     .controlSize(.large)
-                    .tint(.red)
                     .glassEffectID("primary", in: glassNS)
                 case .finished:
                     if let blend = job.blendURL {
@@ -111,8 +101,7 @@ struct JobDetailView: View {
                                 .font(.headline)
                                 .padding(.horizontal, 8)
                         }
-                        .buttonStyle(.glassProminent)
-                        .buttonBorderShape(.capsule)
+                        .buttonStyle(.liquidGlass(.primary))
                         .controlSize(.extraLarge)
                         .glassEffectID("primary", in: glassNS)
                     }
@@ -129,15 +118,14 @@ struct JobDetailView: View {
                         }
                         .help("Copy the Blender import command")
                         .glassEffectID("script", in: glassNS)
-                        Button { store.retry(job) } label: {
+                        Button { store.retry(job, fromScratch: true) } label: {
                             Image(systemName: "arrow.clockwise")
                                 .frame(width: 22, height: 22)
                         }
                         .help("Solve again")
                         .glassEffectID("retry", in: glassNS)
                     }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
+                    .buttonStyle(.liquidGlass(circle: true))
                     .controlSize(.large)
                 case .failed, .cancelled:
                     Button { store.retry(job) } label: {
@@ -145,15 +133,13 @@ struct JobDetailView: View {
                             .font(.headline)
                             .padding(.horizontal, 8)
                     }
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.capsule)
+                    .buttonStyle(.liquidGlass(.primary))
                     .controlSize(.extraLarge)
                     .glassEffectID("primary", in: glassNS)
                     Button { NSWorkspace.shared.activateFileViewerSelecting([job.projectDir]) } label: {
                         Label("Show Files", systemImage: "folder")
                     }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.capsule)
+                    .buttonStyle(.liquidGlass())
                     .glassEffectID("files", in: glassNS)
                 }
             }
@@ -251,7 +237,12 @@ struct JobDetailView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer()
-                    Image(systemName: "chevron.down").rotationEffect(.degrees(showLog ? 180 : 0))
+                    Image(systemName: "chevron.down")
+                        .font(.callout.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(showLog ? 180 : 0))
+                        .frame(width: 30, height: 30)
+                        .glassEffect(.regular.interactive(), in: .circle)
                 }
                 .contentShape(.rect)
             }
@@ -316,6 +307,12 @@ private struct StageRow: View {
                         .font(.callout.weight(stage.state == .running ? .bold : .semibold))
                         .foregroundStyle(stage.state == .pending ? .secondary : .primary)
                     Spacer()
+                    if stage.state == .running && stage.fraction >= 0 {
+                        Text("\(Int(stage.fraction * 100))%")
+                            .font(.caption.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(.tint)
+                            .contentTransition(.numericText())
+                    }
                     if let s = stage.startedAt {
                         TimelineView(.periodic(from: .now, by: 1)) { _ in
                             Text(TrackJob.format((stage.finishedAt ?? Date()).timeIntervalSince(s)))
@@ -323,11 +320,6 @@ private struct StageRow: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                }
-                if stage.state == .running {
-                    GlassProgressBar(value: stage.fraction < 0 ? nil : stage.fraction, height: 6)
-                        .padding(.vertical, 2)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .leading)))
                 }
                 if !stage.detail.isEmpty || stage.state == .skipped {
                     Text(stage.state == .skipped ? "Skipped" : stage.detail)
@@ -346,7 +338,8 @@ private struct StageRow: View {
         .background {
             if stage.state == .running {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.12))
+                    .fill(.clear)
+                    .glassEffect(.regular.tint(Color.accentColor.opacity(0.14)), in: .rect(cornerRadius: 16, style: .continuous))
                     .padding(-2)
                     .transition(.opacity)
             }
@@ -357,21 +350,39 @@ private struct StageRow: View {
 
     private var node: some View {
         ZStack {
+            if stage.state == .running {
+                ProgressRing(progress: stage.fraction, lineWidth: 3)
+                    .frame(width: 38, height: 38)
+                    .transition(.scale.combined(with: .opacity))
+            }
             Circle()
-                .fill(fill)
-                .overlay(Circle().strokeBorder(.white.opacity(stage.state == .pending ? 0.08 : 0.3), lineWidth: 0.75))
+                .fill(.clear)
+                .glassEffect(nodeGlass, in: .circle)
+                .overlay(Circle().fill(wash))
+                .overlay(Circle().strokeBorder(.white.opacity(stage.state == .pending ? 0.08 : 0.25), lineWidth: 0.75))
                 .shadow(color: glow, radius: stage.state == .running || stage.state == .done ? 6 : 0)
             icon
+                .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
         }
         .frame(width: 30, height: 30)
     }
 
-    private var fill: AnyShapeStyle {
+    private var nodeGlass: Glass {
         switch stage.state {
-        case .done: AnyShapeStyle(LinearGradient(colors: [.green.mix(with: .white, by: 0.2), .green], startPoint: .top, endPoint: .bottom))
-        case .running: AnyShapeStyle(LinearGradient(colors: [Color.accentColor.mix(with: .white, by: 0.2), .accentColor], startPoint: .top, endPoint: .bottom))
-        case .failed: AnyShapeStyle(Color.red)
-        default: AnyShapeStyle(Color.primary.opacity(0.08))
+        case .done: .regular.tint(Color.green.opacity(0.6))
+        case .running: .regular.tint(Color.accentColor.opacity(0.65))
+        case .failed: .regular.tint(Color.red.opacity(0.6))
+        default: .regular
+        }
+    }
+
+    /// Keeps the state colour visible when the window is inactive and glass tints fade.
+    private var wash: Color {
+        switch stage.state {
+        case .done: .green.opacity(0.3)
+        case .running: Color.accentColor.opacity(0.3)
+        case .failed: .red.opacity(0.3)
+        default: .clear
         }
     }
 

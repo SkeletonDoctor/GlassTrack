@@ -136,7 +136,7 @@ struct JobSettings: Codable, Equatable {
 
 // MARK: - Pipeline stages
 
-enum StageID: String, CaseIterable, Identifiable {
+enum StageID: String, CaseIterable, Identifiable, Codable {
     case extract, features, matching, mapping, undistort, export, blender
 
     var id: String { rawValue }
@@ -179,11 +179,11 @@ enum StageID: String, CaseIterable, Identifiable {
     }
 }
 
-enum StageState: Equatable {
+enum StageState: Equatable, Codable {
     case pending, running, done, skipped, failed(String)
 }
 
-struct StageProgress: Identifiable, Equatable {
+struct StageProgress: Identifiable, Equatable, Codable {
     let id: StageID
     var state: StageState = .pending
     var fraction: Double = 0          // 0…1, negative = indeterminate
@@ -192,7 +192,7 @@ struct StageProgress: Identifiable, Equatable {
     var finishedAt: Date?
 }
 
-enum JobStatus: Equatable {
+enum JobStatus: Equatable, Codable {
     case idle, running, finished, failed(String), cancelled
 
     var label: String {
@@ -216,11 +216,11 @@ enum JobStatus: Equatable {
     }
 }
 
-enum InputKind: Equatable {
+enum InputKind: String, Equatable, Codable {
     case video, imageFolder
 }
 
-struct VideoInfo: Equatable {
+struct VideoInfo: Equatable, Codable {
     var width: Int
     var height: Int
     var fps: Double
@@ -228,10 +228,34 @@ struct VideoInfo: Equatable {
     var duration: Double
 }
 
-struct SolveStats: Equatable {
+struct SolveStats: Equatable, Codable {
     var registeredImages: Int = 0
     var totalImages: Int = 0
     var points: Int = 0
     var meanReprojectionError: Double?
     var meanTrackLength: Double?
+}
+
+/// Everything needed to restore a track after relaunch.
+struct JobSnapshot: Codable {
+    var id: UUID
+    var name: String
+    var inputPath: String
+    var inputKind: InputKind
+    var settings: JobSettings
+    var outputRoot: String
+    var folderName: String
+    var createdAt: Date
+    var status: JobStatus
+    var stages: [StageProgress]
+    var log: [String]
+    var videoInfo: VideoInfo?
+    var imageCount: Int
+    var stats: SolveStats?
+    var startedAt: Date?
+    var finishedAt: Date?
+    var blendPath: String?
+    var frameMap: [String: Int]
+    var extractWidth: Int?
+    var extractHeight: Int?
 }

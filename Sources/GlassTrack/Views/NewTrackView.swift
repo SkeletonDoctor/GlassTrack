@@ -66,7 +66,7 @@ struct NewTrackView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
             }
-            .buttonStyle(.glassProminent)
+            .buttonStyle(.liquidGlass(.primary))
             .controlSize(.large)
         }
         .frame(maxWidth: .infinity, minHeight: 340)
@@ -149,8 +149,7 @@ private struct DraftEditor: View {
             Button(role: .cancel, action: onCancel) {
                 Image(systemName: "xmark")
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(.liquidGlass(circle: true))
             .help("Choose different footage")
         }
         .padding(16)
@@ -235,7 +234,7 @@ private struct DraftEditor: View {
                     Toggle("", isOn: Binding(
                         get: { job.settings.maxFrames > 0 },
                         set: { on in withAnimation(.snappy) { job.settings.maxFrames = on ? 300 : 0 } }))
-                        .toggleStyle(.switch)
+                        .toggleStyle(.liquidGlass)
                         .labelsHidden()
                 }
             }
@@ -304,25 +303,24 @@ private struct DraftEditor: View {
                     Hairline()
                     SettingRow(symbol: "camera.fill", color: .blue, title: "Fixed zoom",
                                subtitle: "All frames share one camera") {
-                        Toggle("", isOn: $job.settings.singleCamera).toggleStyle(.switch).labelsHidden()
+                        Toggle("", isOn: $job.settings.singleCamera).toggleStyle(.liquidGlass).labelsHidden()
                     }
                     Hairline()
                     SettingRow(symbol: "rectangle.dashed", color: .cyan, title: "Undistorted frames",
                                subtitle: "Also export lens-corrected images") {
-                        Toggle("", isOn: $job.settings.undistort).toggleStyle(.switch).labelsHidden()
+                        Toggle("", isOn: $job.settings.undistort).toggleStyle(.liquidGlass).labelsHidden()
                     }
                     Hairline()
                     SettingRow(symbol: "cube.transparent.fill", color: .orange, title: "Build .blend scene",
                                subtitle: ToolLocator.blender() == nil ? "Blender not installed" : "Camera, point cloud & plate, ready to open") {
-                        Toggle("", isOn: $job.settings.buildBlend).toggleStyle(.switch).labelsHidden()
+                        Toggle("", isOn: $job.settings.buildBlend).toggleStyle(.liquidGlass).labelsHidden()
                             .disabled(ToolLocator.blender() == nil)
                     }
                     Hairline()
                     SettingRow(symbol: "folder.fill", color: .gray, title: "Save to",
                                subtitle: job.outputRoot.path(percentEncoded: false)) {
                         Button("Change…") { chooseOutput() }
-                            .buttonStyle(.glass)
-                            .buttonBorderShape(.capsule)
+                            .buttonStyle(.liquidGlass())
                     }
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -341,8 +339,7 @@ private struct DraftEditor: View {
             Button(role: .cancel, action: onCancel) {
                 Text("Cancel").padding(.horizontal, 6)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.capsule)
+            .buttonStyle(.liquidGlass())
             .controlSize(.large)
 
             Button(action: onStart) {
@@ -350,8 +347,7 @@ private struct DraftEditor: View {
                     .font(.headline)
                     .padding(.horizontal, 10)
             }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.capsule)
+            .buttonStyle(.liquidGlass(.primary))
             .controlSize(.extraLarge)
             .keyboardShortcut(.defaultAction)
             .disabled(job.videoInfo == nil && job.imageCount == 0)
@@ -432,9 +428,10 @@ private struct QualityCard: View {
             .contentShape(.rect(cornerRadius: 22))
         }
         .buttonStyle(.plain)
-        .glassEffect(selected ? .regular.tint(.accentColor).interactive() : .regular.interactive(),
+        .glassEffect(selected ? .regular.tint(Color.accentColor.opacity(0.38)).interactive() : .regular.interactive(),
                      in: .rect(cornerRadius: 22))
-        .shadow(color: selected ? Color.accentColor.opacity(0.4) : .clear, radius: 14, y: 6)
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(selected ? 0.3 : 0.08), lineWidth: selected ? 1 : 0.75))
+        .shadow(color: selected ? Color.accentColor.opacity(0.35) : .clear, radius: 16, y: 6)
         .scaleEffect(hover && !selected ? 1.02 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hover)
         .onHover { hover = $0 }

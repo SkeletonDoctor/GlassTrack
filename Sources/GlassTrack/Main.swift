@@ -98,6 +98,15 @@ final class JobStore {
 
     var jobs: [TrackJob] = []
     var selection: TrackJob.ID?
+    @ObservationIgnored private var terminating = false
+
+    init() {
+        load()
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
+                                               object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { JobStore.shared.prepareForQuit() }
+        }
+    }
     /// Footage opened via Finder / Dock, picked up by the New Track screen.
     var pendingOpen: URL? {
         didSet { if pendingOpen != nil { selection = nil } }
@@ -129,9 +138,11 @@ final class JobStore {
     var selectedJob: TrackJob? { jobs.first { $0.id == selection } }
 
     func enqueue(_ job: TrackJob) {
+        job.onPersist = { [weak self] in self?.save() }
         jobs.insert(job, at: 0)
         selection = job.id
         defaultSettings = job.settings
+        save()
         pump()
     }
 
@@ -139,12 +150,75 @@ final class JobStore {
         job.cancel()
         jobs.removeAll { $0.id == job.id }
         if selection == job.id { selection = nil }
+        save()
     }
 
-    func retry(_ job: TrackJob) {
-        job.status = .idle
-        job.stages = StageID.allCases.map { StageProgress(id: $0) }
+    /// Re-queues a track. Failed or cancelled tracks pick up from their last finished stage;
+    /// `fromScratch` solves everything again.
+    func retry(_ job: TrackJob, fromScratch: Bool = false) {
+        if fromScratch {
+            job.resetProgress()
+        } else {
+            job.status = .idle
+        }
+        save()
         pump()
+    }
+
+    // MARK: Persistence
+
+    private static var storeURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GlassTrack", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("tracks.json")
+    }
+
+    private struct Saved: Codable {
+        var jobs: [JobSnapshot]
+        var selection: UUID?
+    }
+
+    func save() {
+        guard !terminating else { return }
+        write()
+    }
+
+    private func write() {
+        let saved = Saved(jobs: jobs.map(\.snapshot), selection: selection)
+        do {
+            let enc = JSONEncoder()
+            enc.dateEncodingStrategy = .iso8601
+            try enc.encode(saved).write(to: Self.storeURL, options: .atomic)
+        } catch {
+            NSLog("GlassTrack: could not save tracks: \(error)")
+        }
+    }
+
+    private func load() {
+        guard let data = try? Data(contentsOf: Self.storeURL) else { return }
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        guard let saved = try? dec.decode(Saved.self, from: data) else { return }
+        jobs = saved.jobs.map { snap in
+            let job = TrackJob(snapshot: snap)
+            job.onPersist = { [weak self] in self?.save() }
+            Task { await job.loadThumbnail() }
+            return job
+        }
+        selection = saved.selection.flatMap { id in jobs.contains { $0.id == id } ? id : nil }
+        // Pick up queued or interrupted solves once the run loop is going.
+        Task { @MainActor in
+            if ToolLocator.colmap() != nil { self.pump() }
+        }
+    }
+
+    /// Saves state with running solves still marked running (so they resume next launch),
+    /// then stops their child processes.
+    private func prepareForQuit() {
+        write()
+        terminating = true
+        for job in jobs where job.status == .running { job.cancel() }
     }
 
     /// Starts the oldest waiting job when nothing is running.

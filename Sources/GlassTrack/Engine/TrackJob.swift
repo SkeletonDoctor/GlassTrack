@@ -13,7 +13,7 @@ struct PipelineError: LocalizedError {
 @MainActor
 @Observable
 final class TrackJob: Identifiable {
-    let id = UUID()
+    let id: UUID
     var name: String
     let inputURL: URL
     let inputKind: InputKind
@@ -35,11 +35,13 @@ final class TrackJob: Identifiable {
 
     /// Called for every log line (used by the command line mode).
     @ObservationIgnored var onLog: ((String) -> Void)?
+    /// Called whenever state worth saving changes (stage boundaries, finish).
+    @ObservationIgnored var onPersist: (() -> Void)?
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var extractSize: (Int, Int)?
 
     var projectDir: URL { outputRoot.appendingPathComponent(folderName, isDirectory: true) }
-    @ObservationIgnored private lazy var folderName: String = {
+    @ObservationIgnored private(set) lazy var folderName: String = {
         let f = DateFormatter()
         f.dateFormat = "yyyyMMdd-HHmmss"
         return "\(name.replacingOccurrences(of: "/", with: "-"))_\(f.string(from: createdAt))"
@@ -52,6 +54,7 @@ final class TrackJob: Identifiable {
     var undistortedDir: URL { projectDir.appendingPathComponent("undistorted", isDirectory: true) }
 
     init(input: URL, settings: JobSettings, outputRoot: URL) {
+        id = UUID()
         var isDir: ObjCBool = false
         FileManager.default.fileExists(atPath: input.path, isDirectory: &isDir)
         inputURL = input
@@ -59,6 +62,67 @@ final class TrackJob: Identifiable {
         name = input.deletingPathExtension().lastPathComponent
         self.settings = settings
         self.outputRoot = outputRoot
+    }
+
+    // MARK: Persistence
+
+    init(snapshot s: JobSnapshot) {
+        id = s.id
+        name = s.name
+        inputURL = URL(fileURLWithPath: s.inputPath)
+        inputKind = s.inputKind
+        settings = s.settings
+        outputRoot = URL(fileURLWithPath: s.outputRoot)
+        createdAt = s.createdAt
+        status = s.status
+        stages = s.stages
+        log = s.log
+        videoInfo = s.videoInfo
+        imageCount = s.imageCount
+        stats = s.stats
+        startedAt = s.startedAt
+        finishedAt = s.finishedAt
+        blendURL = s.blendPath.map { URL(fileURLWithPath: $0) }
+        frameMap = s.frameMap
+        if let w = s.extractWidth, let h = s.extractHeight { extractSize = (w, h) }
+        folderName = s.folderName
+
+        // A solve that was running when the app quit resumes from its last finished stage.
+        if status == .running {
+            status = .idle
+            for i in stages.indices where stages[i].state == .running {
+                stages[i] = StageProgress(id: stages[i].id)
+            }
+            log.append("── Resuming after relaunch ──")
+        }
+        if status == .finished {
+            model = SparseModel.load(from: textModelDir)
+        }
+    }
+
+    var snapshot: JobSnapshot {
+        JobSnapshot(id: id, name: name, inputPath: inputURL.path, inputKind: inputKind, settings: settings,
+                    outputRoot: outputRoot.path, folderName: folderName, createdAt: createdAt,
+                    status: status, stages: stages, log: Array(log.suffix(400)), videoInfo: videoInfo,
+                    imageCount: imageCount, stats: stats, startedAt: startedAt, finishedAt: finishedAt,
+                    blendPath: blendURL?.path, frameMap: frameMap,
+                    extractWidth: extractSize?.0, extractHeight: extractSize?.1)
+    }
+
+    /// Restores the thumbnail of a track loaded from disk.
+    func loadThumbnail() async {
+        guard thumbnail == nil else { return }
+        if inputKind == .video, FileManager.default.fileExists(atPath: inputURL.path) {
+            let gen = AVAssetImageGenerator(asset: AVURLAsset(url: inputURL))
+            gen.appliesPreferredTrackTransform = true
+            gen.maximumSize = CGSize(width: 1200, height: 1200)
+            if let cg = try? await gen.image(at: CMTime(seconds: 0.5, preferredTimescale: 600)).image {
+                thumbnail = NSImage(cgImage: cg, size: .zero)
+                return
+            }
+        }
+        let first = Self.listImages(in: imagesDir).first ?? Self.listImages(in: inputURL).first
+        if let first { thumbnail = NSImage(contentsOf: first) }
     }
 
     // MARK: Derived state
@@ -141,31 +205,44 @@ final class TrackJob: Identifiable {
 
     // MARK: Pipeline
 
+    private func isDone(_ id: StageID) -> Bool { stages.first { $0.id == id }?.state == .done }
+
+    /// Runs the pipeline. Stages already marked done (from an earlier, interrupted run) are skipped.
     private func run() async {
+        let resuming = stages.contains { $0.state == .done }
         status = .running
         startedAt = Date()
         finishedAt = nil
-        stats = nil
-        model = nil
-        blendURL = nil
-        stages = StageID.allCases.map { StageProgress(id: $0) }
+        if resuming {
+            for i in stages.indices where stages[i].state != .done {
+                stages[i] = StageProgress(id: stages[i].id)
+            }
+        } else {
+            stats = nil
+            model = nil
+            blendURL = nil
+            stages = StageID.allCases.map { StageProgress(id: $0) }
+        }
         if !settings.undistort { setState(.undistort, .skipped) }
         if !settings.buildBlend || ToolLocator.blender() == nil { setState(.blender, .skipped) }
+        onPersist?()
 
         do {
             guard let colmap = ToolLocator.colmap() else { throw PipelineError("COLMAP is not installed.") }
-            try prepareFolders()
-            emit("Project folder: \(projectDir.path)")
+            try prepareFolders(resetDatabase: !isDone(.features))
+            emit(resuming ? "Resuming in \(projectDir.path)" : "Project folder: \(projectDir.path)")
 
-            try await stage(.extract) { try await self.extractFrames() }
-            try await stage(.features) { try await self.featureExtraction(colmap) }
-            try await stage(.matching) { try await self.matching(colmap) }
-            let best = try await stage(.mapping) { try await self.mapping(colmap) }
-            if settings.undistort {
+            if !isDone(.extract) { try await stage(.extract) { try await self.extractFrames() } }
+            if !isDone(.features) { try await stage(.features) { try await self.featureExtraction(colmap) } }
+            if !isDone(.matching) { try await stage(.matching) { try await self.matching(colmap) } }
+            let best = isDone(.mapping)
+                ? try bestModel()
+                : try await stage(.mapping) { try await self.mapping(colmap) }
+            if settings.undistort && !isDone(.undistort) {
                 try await stage(.undistort) { try await self.undistort(colmap, model: best) }
             }
-            try await stage(.export) { try await self.export(colmap, model: best) }
-            if stages.first(where: { $0.id == .blender })?.state != .skipped {
+            if !isDone(.export) { try await stage(.export) { try await self.export(colmap, model: best) } }
+            if stages.first(where: { $0.id == .blender })?.state == .pending {
                 try await stage(.blender) { try await self.buildBlend() }
             }
             status = .finished
@@ -181,6 +258,16 @@ final class TrackJob: Identifiable {
             emit("✗ \(msg)")
         }
         finishedAt = Date()
+        onPersist?()
+    }
+
+    /// Clears progress so the next start solves from scratch.
+    func resetProgress() {
+        status = .idle
+        stages = StageID.allCases.map { StageProgress(id: $0) }
+        stats = nil
+        model = nil
+        blendURL = nil
     }
 
     @discardableResult
@@ -190,14 +277,15 @@ final class TrackJob: Identifiable {
         emit("── \(id.title) ──")
         let result = try await body()
         update(id) { $0.state = .done; $0.fraction = 1; $0.finishedAt = Date() }
+        onPersist?()
         return result
     }
 
-    private func prepareFolders() throws {
+    private func prepareFolders(resetDatabase: Bool) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: imagesDir, withIntermediateDirectories: true)
         try fm.createDirectory(at: sparseDir, withIntermediateDirectories: true)
-        try? fm.removeItem(at: databaseURL)
+        if resetDatabase { try? fm.removeItem(at: databaseURL) }
     }
 
     // 1. Frames
@@ -400,17 +488,26 @@ final class TrackJob: Identifiable {
             }
         }
 
+        let best = try bestModel()
+        let models = ((try? fm.contentsOfDirectory(at: sparseDir, includingPropertiesForKeys: nil)) ?? [])
+            .filter { fm.fileExists(atPath: $0.appendingPathComponent("images.bin").path) }
+        let reg = registeredImageCount(inBinaryModel: best)
+        if models.count > 1 {
+            emit("COLMAP produced \(models.count) partial models; using the largest (\(reg) frames).")
+        }
+        update(.mapping) { $0.detail = "Solved \(reg) of \(total) frames" }
+        return best
+    }
+
+    /// The sub-model with the most registered frames.
+    private func bestModel() throws -> URL {
+        let fm = FileManager.default
         let models = ((try? fm.contentsOfDirectory(at: sparseDir, includingPropertiesForKeys: nil)) ?? [])
             .filter { fm.fileExists(atPath: $0.appendingPathComponent("images.bin").path) }
         guard let best = models.max(by: { registeredImageCount(inBinaryModel: $0) < registeredImageCount(inBinaryModel: $1) })
         else {
             throw PipelineError("COLMAP could not solve the camera. Try a smaller frame step, a higher quality preset, or footage with more parallax.")
         }
-        let reg = registeredImageCount(inBinaryModel: best)
-        if models.count > 1 {
-            emit("COLMAP produced \(models.count) partial models; using the largest (\(reg) frames).")
-        }
-        update(.mapping) { $0.detail = "Solved \(reg) of \(total) frames" }
         return best
     }
 

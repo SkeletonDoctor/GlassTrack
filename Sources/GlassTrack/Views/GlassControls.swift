@@ -1,89 +1,5 @@
 import SwiftUI
 
-// MARK: - Progress bar
-
-/// Apple-style capsule progress bar: recessed track, glossy gradient fill with a soft glow,
-/// a light sweep while active, and a gliding pill when the value is unknown (`nil`).
-struct GlassProgressBar: View {
-    var value: Double?
-    var tint: Color = .accentColor
-    var height: CGFloat = 8
-    var active: Bool = true
-
-    var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            ZStack(alignment: .leading) {
-                // Recessed track
-                Capsule()
-                    .fill(.primary.opacity(0.09))
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(
-                                LinearGradient(colors: [.black.opacity(0.18), .white.opacity(0.10)],
-                                               startPoint: .top, endPoint: .bottom),
-                                lineWidth: 0.75)
-                    )
-
-                if let value {
-                    fill
-                        .frame(width: max(height, w * min(max(value, 0), 1)))
-                        .animation(.spring(response: 0.5, dampingFraction: 0.85), value: value)
-                        .opacity(value <= 0 ? 0 : 1)
-                } else {
-                    TimelineView(.animation) { ctx in
-                        let t = ctx.date.timeIntervalSinceReferenceDate
-                        let phase = (sin(t * 2.2) + 1) / 2
-                        fill
-                            .frame(width: w * 0.32)
-                            .offset(x: (w - w * 0.32) * phase)
-                    }
-                }
-            }
-            .clipShape(Capsule())
-        }
-        .frame(height: height)
-    }
-
-    private var fill: some View {
-        Capsule()
-            .fill(LinearGradient(colors: [tint.mix(with: .white, by: 0.25), tint],
-                                 startPoint: .leading, endPoint: .trailing))
-            .overlay(alignment: .top) {
-                // Specular highlight on the upper half
-                Capsule()
-                    .fill(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0)],
-                                         startPoint: .top, endPoint: .bottom))
-                    .frame(height: height * 0.55)
-                    .padding(.horizontal, height * 0.25)
-                    .padding(.top, 0.5)
-            }
-            .overlay {
-                if active && value != nil { Shimmer() }
-            }
-            .clipShape(Capsule())
-            .shadow(color: tint.opacity(0.55), radius: height * 0.6)
-    }
-}
-
-/// A soft light band sweeping left to right.
-private struct Shimmer: View {
-    var body: some View {
-        TimelineView(.animation) { ctx in
-            GeometryReader { geo in
-                let t = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.8
-                let band = max(40, geo.size.width * 0.35)
-                LinearGradient(colors: [.white.opacity(0), .white.opacity(0.38), .white.opacity(0)],
-                               startPoint: .leading, endPoint: .trailing)
-                    .frame(width: band)
-                    .offset(x: -band + (geo.size.width + band) * t)
-            }
-        }
-        .blendMode(.plusLighter)
-        .allowsHitTesting(false)
-    }
-}
-
 // MARK: - Dropdown
 
 struct DropdownOption<Value: Hashable>: Identifiable {
@@ -156,25 +72,31 @@ struct GlassDropdown<Value: Hashable>: View {
                 if let s = opt.symbol {
                     Image(systemName: s)
                         .frame(width: 20)
-                        .foregroundStyle(isHover ? AnyShapeStyle(.white) : AnyShapeStyle(.tint))
+                        .foregroundStyle(.tint)
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(opt.title).fontWeight(.medium)
                     if let sub = opt.subtitle {
                         Text(sub)
                             .font(.caption)
-                            .foregroundStyle(isHover ? AnyShapeStyle(.white.opacity(0.85)) : AnyShapeStyle(.secondary))
+                            .foregroundStyle(.secondary)
                     }
                 }
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(isHover ? .white : .primary)
+            .foregroundStyle(.primary)
             .padding(.horizontal, 10)
             .padding(.vertical, opt.subtitle == nil ? 6 : 7)
             .background {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(isHover ? Color.accentColor : .clear)
+                if isHover || isSelected {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(.clear)
+                        .glassEffect(.regular.tint(Color.accentColor.opacity(isHover ? 0.45 : 0.18)),
+                                     in: .rect(cornerRadius: 12, style: .continuous))
+                        .transition(.opacity)
+                }
             }
+            .animation(.easeOut(duration: 0.12), value: isHover)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -203,16 +125,17 @@ struct GlassSegmented<Value: Hashable>: View {
                     }
                     .font(.callout.weight(selected ? .semibold : .medium))
                     .foregroundStyle(selected ? .white : .primary)
+                    .shadow(color: selected ? .black.opacity(0.25) : .clear, radius: 1, y: 0.5)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 7)
                     .frame(maxWidth: .infinity)
                     .background {
                         if selected {
                             Capsule()
-                                .fill(LinearGradient(colors: [Color.accentColor.mix(with: .white, by: 0.15), .accentColor],
-                                                     startPoint: .top, endPoint: .bottom))
-                                .overlay(Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 0.75))
-                                .shadow(color: Color.accentColor.opacity(0.45), radius: 6, y: 2)
+                                .fill(.clear)
+                                .glassEffect(.regular.tint(Color.accentColor.opacity(0.42)).interactive(), in: .capsule)
+                                .overlay(Capsule().stroke(.white.opacity(0.18), lineWidth: 0.75))
+                                .shadow(color: Color.accentColor.opacity(0.35), radius: 8, y: 2)
                                 .matchedGeometryEffect(id: "pill", in: ns)
                         }
                     }
@@ -286,11 +209,8 @@ struct SettingRow<Trailing: View>: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 28, height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(LinearGradient(colors: [color.mix(with: .white, by: 0.2), color],
-                                             startPoint: .top, endPoint: .bottom))
-                )
+                .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
+                .glassEffect(.regular.tint(color.opacity(0.65)), in: .rect(cornerRadius: 9, style: .continuous))
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).fontWeight(.medium)
                 if let subtitle {
@@ -331,4 +251,114 @@ struct Hairline: View {
     var body: some View {
         Rectangle().fill(.primary.opacity(0.08)).frame(height: 1)
     }
+}
+
+// MARK: - Liquid Glass button style
+
+/// Every button in the app: a real glass capsule (or circle) that refracts what's behind it,
+/// reacts to the pointer, and tints for primary / destructive actions.
+struct LiquidGlassButtonStyle: ButtonStyle {
+    enum Kind { case primary, secondary, destructive }
+    var kind: Kind = .secondary
+    var circle: Bool = false
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.controlSize) private var controlSize
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = circle ? AnyShape(Circle()) : AnyShape(Capsule())
+        configuration.label
+            .font(font)
+            .foregroundStyle(foreground)
+            .shadow(color: kind == .secondary ? .clear : .black.opacity(0.25), radius: 1, y: 0.5)
+            .padding(.horizontal, circle ? pad.v : pad.h)
+            .padding(.vertical, pad.v)
+            .contentShape(shape)
+            .glassEffect(glass.interactive(), in: shape)
+            .overlay(shape.stroke(.white.opacity(configuration.isPressed ? 0.35 : 0.12), lineWidth: 0.75))
+            .shadow(color: glow.opacity(configuration.isPressed ? 0.15 : 0.35), radius: 12, y: 4)
+            .scaleEffect(configuration.isPressed ? 0.95 : 1)
+            .opacity(isEnabled ? 1 : 0.45)
+            .animation(.spring(response: 0.25, dampingFraction: 0.65), value: configuration.isPressed)
+    }
+
+    private var glass: Glass {
+        switch kind {
+        case .primary: .regular.tint(Color.accentColor.opacity(0.4))
+        case .destructive: .regular.tint(Color.red.opacity(0.4))
+        case .secondary: .regular
+        }
+    }
+
+    private var glow: Color {
+        switch kind {
+        case .primary: .accentColor
+        case .destructive: .red
+        case .secondary: .clear
+        }
+    }
+
+    private var foreground: Color { kind == .secondary ? .primary : .white }
+
+    private var font: Font {
+        switch controlSize {
+        case .extraLarge: .headline
+        case .large: .body.weight(.semibold)
+        case .small, .mini: .callout.weight(.medium)
+        default: .body.weight(.medium)
+        }
+    }
+
+    private var pad: (h: CGFloat, v: CGFloat) {
+        switch controlSize {
+        case .extraLarge: (24, 13)
+        case .large: (18, 10)
+        case .small, .mini: (10, 5)
+        default: (14, 7)
+        }
+    }
+}
+
+extension ButtonStyle where Self == LiquidGlassButtonStyle {
+    static func liquidGlass(_ kind: LiquidGlassButtonStyle.Kind = .secondary, circle: Bool = false) -> LiquidGlassButtonStyle {
+        LiquidGlassButtonStyle(kind: kind, circle: circle)
+    }
+}
+
+// MARK: - Liquid Glass toggle
+
+/// Glass track that fills with tinted glass when on, with a glass bubble knob.
+struct LiquidGlassToggleStyle: ToggleStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let on = configuration.isOn
+        HStack(spacing: 10) {
+            configuration.label
+            Button {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.7)) { configuration.isOn.toggle() }
+            } label: {
+                ZStack(alignment: on ? .trailing : .leading) {
+                    Capsule()
+                        .fill(.clear)
+                        .frame(width: 48, height: 28)
+                        .glassEffect(on ? .regular.tint(Color.accentColor.opacity(0.6)).interactive() : .regular.interactive(),
+                                     in: .capsule)
+                    Circle()
+                        .fill(LinearGradient(colors: [.white, .white.opacity(0.82)], startPoint: .top, endPoint: .bottom))
+                        .overlay(Circle().stroke(.white.opacity(0.6), lineWidth: 0.5))
+                        .frame(width: 22, height: 22)
+                        .shadow(color: .black.opacity(0.25), radius: 2.5, y: 1.5)
+                        .padding(3)
+                }
+                .contentShape(.capsule)
+            }
+            .buttonStyle(.plain)
+            .opacity(isEnabled ? 1 : 0.4)
+        }
+    }
+}
+
+extension ToggleStyle where Self == LiquidGlassToggleStyle {
+    static var liquidGlass: LiquidGlassToggleStyle { LiquidGlassToggleStyle() }
 }
