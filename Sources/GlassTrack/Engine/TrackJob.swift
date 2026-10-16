@@ -237,8 +237,12 @@ final class TrackJob: Identifiable {
 
         do {
             guard let colmap = ToolLocator.colmap() else { throw PipelineError("COLMAP is not installed.") }
-            try prepareFolders(resetDatabase: !isDone(.features))
+            try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+            try acquireLock()
+            defer { releaseLock() }
             emit(resuming ? "Resuming in \(projectDir.path)" : "Project folder: \(projectDir.path)")
+            repairMissingOutputs()
+            try prepareFolders(resetDatabase: !isDone(.features))
 
             if !isDone(.extract) { try await stage(.extract) { try await self.extractFrames() } }
             if settings.maskPeople && !isDone(.masks) { try await stage(.masks) { try await self.makeMasks() } }
@@ -268,6 +272,72 @@ final class TrackJob: Identifiable {
         }
         finishedAt = Date()
         onPersist?()
+    }
+
+    // MARK: Solve quality
+
+    struct FrameQuality: Identifiable {
+        let frame: Int          // plate frame number
+        let error: Double?      // mean reprojection error in px; nil = frame did not solve
+        let points: Int
+        var id: Int { frame }
+    }
+
+    /// One entry per frame sent to COLMAP, in plate order, for the quality chart.
+    var frameQuality: [FrameQuality] {
+        guard let model else { return [] }
+        let solved = Dictionary(model.cameras.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
+        return frameMap.sorted { $0.value < $1.value }.map { name, frame in
+            let cam = solved[name]
+            return FrameQuality(frame: frame, error: cam.flatMap { $0.meanError.map(Double.init) },
+                                points: cam?.observations ?? 0)
+        }
+    }
+
+    // MARK: Robustness
+
+    @ObservationIgnored private var lockFD: Int32 = -1
+
+    /// Only one GlassTrack process may work on a project folder at a time; a second instance
+    /// resuming the same track would otherwise delete and rewrite files under the first one.
+    private func acquireLock() throws {
+        let path = projectDir.appendingPathComponent(".glasstrack.lock").path
+        let fd = open(path, O_CREAT | O_RDWR, 0o644)
+        guard fd >= 0 else { return }
+        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            close(fd)
+            throw PipelineError("This track is already being solved by another GlassTrack window or app instance.")
+        }
+        lockFD = fd
+    }
+
+    private func releaseLock() {
+        if lockFD >= 0 { flock(lockFD, LOCK_UN); close(lockFD); lockFD = -1 }
+    }
+
+    /// Stages marked done whose files have gone missing are run again (with everything after them).
+    private func repairMissingOutputs() {
+        let fm = FileManager.default
+        func redo(from id: StageID, because reason: String) {
+            guard let start = StageID.allCases.firstIndex(of: id) else { return }
+            emit("\(reason) — redoing from \(id.title).")
+            for i in stages.indices where StageID.allCases.firstIndex(of: stages[i].id)! >= start
+                && stages[i].state != .skipped {
+                stages[i] = StageProgress(id: stages[i].id)
+            }
+        }
+        let frames = ((try? fm.contentsOfDirectory(atPath: imagesDir.path)) ?? []).filter { !$0.hasPrefix(".") }
+        if isDone(.extract) && frames.isEmpty {
+            redo(from: .extract, because: "Extracted frames are missing")
+        } else if settings.maskPeople && isDone(.masks) && !fm.fileExists(atPath: masksDir.path) {
+            redo(from: .masks, because: "Masks are missing")
+        } else if isDone(.features) && !fm.fileExists(atPath: databaseURL.path) {
+            redo(from: .features, because: "The feature database is missing")
+        } else if isDone(.mapping) && (try? bestModel()) == nil {
+            redo(from: .mapping, because: "The solved model is missing")
+        } else if isDone(.export) && !fm.fileExists(atPath: textModelDir.appendingPathComponent("images.txt").path) {
+            redo(from: .export, because: "The exported model is missing")
+        }
     }
 
     /// Clears progress so the next start solves from scratch.
@@ -502,6 +572,9 @@ final class TrackJob: Identifiable {
 
     private func mapping(_ colmap: String) async throws -> URL {
         let fm = FileManager.default
+        guard fm.fileExists(atPath: imagesDir.path) else {
+            throw PipelineError("The extracted frames folder disappeared (\(imagesDir.path)). Press Try Again to re-extract.")
+        }
         try? fm.removeItem(at: sparseDir)
         try fm.createDirectory(at: sparseDir, withIntermediateDirectories: true)
         let total = imageCount
@@ -550,7 +623,52 @@ final class TrackJob: Identifiable {
             }
         }
 
-        let best = try bestModel()
+        var best = try? bestModel()
+        let firstCount = best.map(registeredImageCount(inBinaryModel:)) ?? 0
+        if settings.mapper == .incremental && Double(firstCount) < Double(total) * 0.9 {
+            // Partial solve: try once more with more forgiving settings and keep the better result.
+            emit("Only \(firstCount) of \(total) frames solved — retrying with relaxed settings.")
+            update(.mapping) { $0.fraction = 0; $0.detail = "Retrying with relaxed settings…" }
+            let retryDir = projectDir.appendingPathComponent("sparse_retry", isDirectory: true)
+            try? fm.removeItem(at: retryDir)
+            try fm.createDirectory(at: retryDir, withIntermediateDirectories: true)
+            let args = ["mapper",
+                        "--database_path", databaseURL.path,
+                        "--image_path", imagesDir.path,
+                        "--output_path", retryDir.path,
+                        "--Mapper.ba_refine_principal_point", "0",
+                        "--Mapper.init_min_tri_angle", "4",
+                        "--Mapper.init_min_num_inliers", "50",
+                        "--Mapper.min_num_matches", "10",
+                        "--Mapper.abs_pose_min_num_inliers", "15",
+                        "--Mapper.filter_max_reproj_error", "6"]
+            try await exec(colmap, args + Self.logArgs, stage: .mapping) { line, job in
+                if line.contains("Registering image #"),
+                   let open = line.lastIndex(of: "("), let close = line.lastIndex(of: ")"), open < close,
+                   let n = Int(line[line.index(after: open)..<close].split(separator: "=").last ?? "") {
+                    job.update(.mapping) {
+                        $0.fraction = Double(n) / Double(max(total, 1))
+                        $0.detail = "Retry: registered \(n) of \(total) frames"
+                    }
+                }
+                return false
+            }
+            let retryModels = ((try? fm.contentsOfDirectory(at: retryDir, includingPropertiesForKeys: nil)) ?? [])
+                .filter { fm.fileExists(atPath: $0.appendingPathComponent("images.bin").path) }
+            if let retryBest = retryModels.max(by: { registeredImageCount(inBinaryModel: $0) < registeredImageCount(inBinaryModel: $1) }),
+               registeredImageCount(inBinaryModel: retryBest) > firstCount {
+                emit("Relaxed solve registered \(registeredImageCount(inBinaryModel: retryBest)) frames; using it.")
+                try? fm.removeItem(at: sparseDir)
+                try fm.moveItem(at: retryDir, to: sparseDir)
+                best = try? bestModel()
+            } else {
+                emit("Relaxed solve wasn't better; keeping the first result.")
+                try? fm.removeItem(at: retryDir)
+            }
+        }
+        guard let best else {
+            throw PipelineError("COLMAP could not solve the camera. Try a smaller frame step, a higher quality preset, or footage with more parallax.")
+        }
         let models = ((try? fm.contentsOfDirectory(at: sparseDir, includingPropertiesForKeys: nil)) ?? [])
             .filter { fm.fileExists(atPath: $0.appendingPathComponent("images.bin").path) }
         let reg = registeredImageCount(inBinaryModel: best)
@@ -653,6 +771,8 @@ final class TrackJob: Identifiable {
             "extractHeight": extractSize?.1 ?? v?.height ?? 0,
             "undistorted": settings.undistort,
             "targetSceneSize": 8.0,
+            "detectGround": settings.detectGround,
+            "cameraHeight": settings.detectGround ? settings.cameraHeight : 0,
             "maxPoints": 300_000,
         ]
         if settings.undistort && (inputKind == .imageFolder || settings.frameStep == 1 && settings.sampling == .everyNth) {

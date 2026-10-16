@@ -118,6 +118,59 @@ def points_node_group(radius, material):
     return ng
 
 
+def find_ground(pts, cams, up, typical, iterations=3000):
+    """RANSAC for the floor: a plane within 35 degrees of level, below every camera, with
+    (almost) no points beneath it, i.e. the floor rather than a table, box top or a slice
+    through the middle of the scene. Returns (normal, offset, inlier fraction), normal
+    pointing towards the cameras, or None."""
+    import numpy as np
+    rng = np.random.default_rng(1)
+    P = np.asarray(pts, dtype=np.float64)
+    if len(P) < 50:
+        return None
+    if len(P) > 30000:
+        P = P[rng.choice(len(P), 30000, replace=False)]
+    C = np.asarray([tuple(c) for c in cams], dtype=np.float64)
+    C = C[:: max(1, len(C) // 60)]
+    u = np.asarray(tuple(up))
+    tol = typical * 0.01
+    cos_max = math.cos(math.radians(35))
+    best = None
+    for _ in range(iterations):
+        a, b, c = P[rng.choice(len(P), 3, replace=False)]
+        n = np.cross(b - a, c - a)
+        ln = np.linalg.norm(n)
+        if ln < 1e-12:
+            continue
+        n /= ln
+        if n @ u < 0:
+            n = -n
+        if n @ u < cos_max:
+            continue
+        d = n @ a
+        if (C @ n - d).min() <= 0:
+            continue
+        h = P @ n - d
+        below = np.count_nonzero(h < -tol)
+        if below > len(P) * 0.03:
+            continue
+        count = np.count_nonzero(np.abs(h) < tol)
+        if best is None or count > best[2]:
+            best = (n, d, count)
+    if best is None or best[2] < len(P) * 0.03:
+        return None
+    # Refine: least-squares plane through the inliers.
+    n, d, _ = best
+    inl = P[np.abs(P @ n - d) < tol]
+    centroid = inl.mean(axis=0)
+    w, v = np.linalg.eigh(np.cov((inl - centroid).T))
+    n2 = v[:, 0]
+    if n2 @ n < 0:
+        n2 = -n2
+    nv = Vector(n2.tolist()).normalized()
+    return nv, nv.dot(Vector(centroid.tolist())), len(inl) / len(P)
+
+
 def main():
     args = parse_args()
     meta_path = os.path.abspath(args["meta"])
@@ -161,6 +214,22 @@ def main():
     for _, Rc, _ in poses:
         up += Rc @ Vector((0, -1, 0))
     up = up.normalized() if up.length > 1e-9 else Vector((0, 0, 1))
+
+    cam_mean_raw = sum((C for _, _, C in poses), Vector()) / len(poses)
+    if points:
+        typical = statistics.median((Vector(p) - cam_mean_raw).length for p, _ in points) or 1.0
+    else:
+        typical = 1.0
+
+    # Ground plane: the dominant, roughly level plane below the cameras (RANSAC on the cloud).
+    ground = None
+    if points and meta.get("detectGround", True):
+        ground = find_ground([p for p, _ in points], [C for _, _, C in poses], up, typical)
+    if ground:
+        n, d, inliers = ground        # plane: n·x = d, n points from the ground towards the cameras
+        up = n
+        print("GlassTrack: ground plane found (%d%% of points)" % round(100 * inliers))
+
     A = up.rotation_difference(Vector((0, 0, 1))).to_matrix()
     fwd = A @ (poses[0][1] @ Vector((0, 0, 1)))
     yaw = math.atan2(fwd.x, fwd.y)  # rotate so the first camera looks down +Y
@@ -170,15 +239,23 @@ def main():
         pts_al = [A @ Vector(p) for p, _ in points]
         cx = statistics.median(v.x for v in pts_al)
         cy = statistics.median(v.y for v in pts_al)
-        zs = sorted(v.z for v in pts_al)
-        cz = zs[int(len(zs) * 0.05)]
+        if ground:
+            cz = ground[1]            # A maps n to +Z, so the plane sits at height d
+        else:
+            zs = sorted(v.z for v in pts_al)
+            cz = zs[int(len(zs) * 0.05)]
         centre = Vector((cx, cy, cz))
-        cam_mean = sum((A @ C for _, _, C in poses), Vector()) / len(poses)
-        dists = sorted((v - cam_mean).length for v in pts_al)
-        typical = dists[len(dists) // 2] or 1.0
     else:
-        centre = Vector((0, 0, 0)); typical = 1.0
-    scale = float(meta.get("targetSceneSize", 8.0)) / typical
+        centre = Vector((0, 0, 0))
+
+    # Scale: real-world camera height if given (needs a ground plane), else a tidy scene size.
+    cam_height = float(meta.get("cameraHeight", 0) or 0)
+    heights = [(A @ C).z - centre.z for _, _, C in poses]
+    if ground and cam_height > 0 and statistics.median(heights) > 1e-9:
+        scale = cam_height / statistics.median(heights)
+        print("GlassTrack: scaled to camera height %.2f m" % cam_height)
+    else:
+        scale = float(meta.get("targetSceneSize", 8.0)) / typical
 
     root_obj = bpy.data.objects.new(name + "_Solve", None)
     root_obj.empty_display_type = "ARROWS"
@@ -254,6 +331,23 @@ def main():
         pc.matrix_parent_inverse = Matrix.Identity(4)
         mod = pc.modifiers.new("Points", "NODES")
         mod.node_group = points_node_group(0.0025 * typical, point_material())
+
+    # --- Ground / shadow catcher ---------------------------------------------------------
+    if ground:
+        xs = [(A @ Vector(p)).x - centre.x for p, _ in points]
+        ys = [(A @ Vector(p)).y - centre.y for p, _ in points]
+        xs.sort(); ys.sort()
+        lo, hi = int(len(xs) * 0.05), int(len(xs) * 0.95) - 1
+        size = max(xs[hi] - xs[lo], ys[hi] - ys[lo]) * scale * 1.5 or 10.0
+        bpy.ops.mesh.primitive_plane_add(size=size, location=((xs[lo] + xs[hi]) / 2 * scale, (ys[lo] + ys[hi]) / 2 * scale, 0))
+        g = bpy.context.object
+        g.name = name + "_Ground"
+        g.display_type = "WIRE"
+        g.hide_render = False
+        try:
+            g.is_shadow_catcher = True
+        except Exception:
+            pass
 
     # --- Background plate ---------------------------------------------------------------
     plate = meta.get("plate")
@@ -348,6 +442,7 @@ def export_all(scene, cam_obj, cloud, name, folder):
         bpy.ops.export_scene.fbx(filepath=os.path.join(folder, name + "_camera.fbx"), use_selection=True,
                                  object_types={"CAMERA"}, bake_anim=True, bake_anim_use_all_actions=False,
                                  bake_anim_use_nla_strips=False, bake_anim_force_startend_keying=True,
+                                 bake_anim_step=1.0, bake_anim_simplify_factor=0.0,
                                  add_leaf_bones=False)
         print("GlassTrack: exported FBX")
     except Exception as e:

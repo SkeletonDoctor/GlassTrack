@@ -215,7 +215,7 @@ enum VideoFrameExtractor {
     /// common frame interval, falling back to the track's nominal rate.
     static func timelineRate(nominal: Double, times: [Double]) -> Double {
         var deltas: [Double] = []
-        for i in 1..<max(1, times.count) where times[i] > times[i - 1] { deltas.append(times[i] - times[i - 1]) }
+        for i in 1..<max(1, times.count) where times[i] - times[i - 1] > 1e-4 { deltas.append(times[i] - times[i - 1]) }
         var raw = nominal
         if !deltas.isEmpty {
             deltas.sort()
@@ -231,15 +231,18 @@ enum VideoFrameExtractor {
     }
 
     /// True when frame intervals vary by more than a quarter frame from the timeline rate.
+    /// Duplicate stamps (common at the start of files with frame reordering) are ignored.
     static func isVariable(times: [Double], fps: Double) -> Bool {
-        guard times.count > 2 else { return false }
+        var unique: [Double] = []
+        for t in times where unique.last.map({ t - $0 > 1e-4 }) ?? true { unique.append(t) }
+        guard unique.count > 4 else { return false }
         let expected = 1 / fps
         var irregular = 0
-        for i in 1..<times.count {
-            let d = times[i] - times[i - 1]
+        for i in 2..<(unique.count - 1) {          // skip the first and last interval
+            let d = unique[i] - unique[i - 1]
             if abs(d - expected) > expected * 0.25 { irregular += 1 }
         }
-        return Double(irregular) / Double(times.count) > 0.01
+        return Double(irregular) / Double(unique.count) > 0.02
     }
 
     private static func format(_ fps: Double) -> String {

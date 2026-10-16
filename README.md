@@ -42,6 +42,12 @@ You need Xcode 26 or newer.
 ./scripts/build_app.sh     # → build/GlassTrack.app (arm64)
 ```
 
+## Tests
+```bash
+./scripts/accuracy_test.sh   # solves tests/data/synthetic_dolly.mp4 and compares to ground truth
+```
+CI (GitHub Actions, macOS) builds the app and runs this test on every push.
+
 ## Headless / CLI
 ```bash
 build/GlassTrack.app/Contents/MacOS/GlassTrack --cli shot.mp4 ~/Movies/GlassTrack balanced 2

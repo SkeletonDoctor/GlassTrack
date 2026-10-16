@@ -133,6 +133,8 @@ struct JobSettings: Codable, Equatable {
     var buildBlend: Bool = true
     var useGPU: Bool = false
     var maskPeople: Bool = false
+    var detectGround: Bool = true
+    var cameraHeight: Double = 0        // metres; 0 = automatic scale
 
     init() {}
 
@@ -159,6 +161,8 @@ struct JobSettings: Codable, Equatable {
         buildBlend = v(.buildBlend, d.buildBlend)
         useGPU = v(.useGPU, d.useGPU)
         maskPeople = v(.maskPeople, d.maskPeople)
+        detectGround = v(.detectGround, d.detectGround)
+        cameraHeight = v(.cameraHeight, d.cameraHeight)
     }
 }
 

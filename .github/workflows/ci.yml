@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install COLMAP and FFmpeg
+        run: brew install colmap ffmpeg
+
+      - name: Build app bundle
+        run: ./scripts/build_app.sh
+
+      - name: Camera accuracy test
+        # Solves a synthetic clip with a known camera and fails if the solve drifts from the truth.
+        run: ./scripts/accuracy_test.sh

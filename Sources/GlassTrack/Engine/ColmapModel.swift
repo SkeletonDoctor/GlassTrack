@@ -7,6 +7,8 @@ struct SparseModel {
         var center: SIMD3<Float>
         var rotation: simd_float3x3   // camera -> world
         var name: String
+        var meanError: Float? = nil   // mean reprojection error (px) of this frame's 3D points
+        var observations: Int = 0     // number of tracked points seen in this frame
     }
 
     var cameras: [Camera] = []
@@ -17,6 +19,24 @@ struct SparseModel {
         guard let imagesTxt = try? String(contentsOf: dir.appendingPathComponent("images.txt"), encoding: .utf8)
         else { return nil }
         var model = SparseModel()
+
+        // Points first: keep a subsample for display, and every point's reprojection error.
+        var pointError: [Int: Float] = [:]
+        if let pts = try? String(contentsOf: dir.appendingPathComponent("points3D.txt"), encoding: .utf8) {
+            let pl = pts.split(separator: "\n").filter { !$0.hasPrefix("#") }
+            let stride = max(1, pl.count / maxPoints)
+            pointError.reserveCapacity(pl.count)
+            for (idx, line) in pl.enumerated() {
+                let p = line.split(separator: " ", maxSplits: 8)
+                guard p.count >= 8, let id = Int(p[0]) else { continue }
+                if let e = Float(p[7]) { pointError[id] = e }
+                if idx % stride == 0, let x = Float(p[1]), let y = Float(p[2]), let z = Float(p[3]),
+                   let r = Float(p[4]), let g = Float(p[5]), let b = Float(p[6]) {
+                    model.points.append(SIMD3(x, y, z))
+                    model.colors.append(SIMD3(r, g, b) / 255)
+                }
+            }
+        }
 
         let lines = imagesTxt.split(separator: "\n", omittingEmptySubsequences: false)
             .filter { !$0.hasPrefix("#") }
@@ -30,28 +50,24 @@ struct SparseModel {
                 let r = simd_float3x3(q)              // world -> camera
                 let rc = r.transpose
                 let c = -(rc * SIMD3(tx, ty, tz))
-                model.cameras.append(Camera(center: c, rotation: rc, name: p[9...].joined(separator: " ")))
+                // Second line: X Y POINT3D_ID triples; average the error of this frame's 3D points.
+                var sum: Float = 0, n = 0
+                if i + 1 < lines.count {
+                    let obs = lines[i + 1].split(separator: " ")
+                    var k = 2
+                    while k < obs.count {
+                        if let id = Int(obs[k]), id >= 0, let e = pointError[id] { sum += e; n += 1 }
+                        k += 3
+                    }
+                }
+                model.cameras.append(Camera(center: c, rotation: rc, name: p[9...].joined(separator: " "),
+                                            meanError: n > 0 ? sum / Float(n) : nil, observations: n))
                 i += 2
             } else {
                 i += 1
             }
         }
         model.cameras.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-
-        if let pts = try? String(contentsOf: dir.appendingPathComponent("points3D.txt"), encoding: .utf8) {
-            let pl = pts.split(separator: "\n").filter { !$0.hasPrefix("#") }
-            let stride = max(1, pl.count / maxPoints)
-            var idx = 0
-            while idx < pl.count {
-                let p = pl[idx].split(separator: " ", maxSplits: 8)
-                if p.count >= 7, let x = Float(p[1]), let y = Float(p[2]), let z = Float(p[3]),
-                   let r = Float(p[4]), let g = Float(p[5]), let b = Float(p[6]) {
-                    model.points.append(SIMD3(x, y, z))
-                    model.colors.append(SIMD3(r, g, b) / 255)
-                }
-                idx += stride
-            }
-        }
         return model.cameras.isEmpty ? nil : model
     }
 

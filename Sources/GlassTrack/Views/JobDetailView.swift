@@ -1,3 +1,4 @@
+import Charts
 import SwiftUI
 
 /// The job screen. Each section is its own view that reads only what it shows, so the
@@ -21,6 +22,8 @@ struct JobDetailView: View {
                     VStack(spacing: 20) {
                         PreviewCard(job: job)
                         StatsSection(job: job)
+                        QualitySection(job: job)
+                        ExportsSection(job: job)
                     }
                 }
                 LogPanel(job: job)
@@ -163,6 +166,144 @@ private struct StatsSection: View {
             StatTile(value: s.meanTrackLength.map { String(format: "%.1f", $0) } ?? "–",
                      label: "Avg. track length", symbol: "point.topleft.down.to.point.bottomright.curvepath")
         }
+        }
+    }
+}
+
+/// Per-frame reprojection error, with frames that failed to solve marked in red.
+private struct QualitySection: View {
+    let job: TrackJob
+
+    var body: some View {
+        if job.status == .finished {
+            let q = job.frameQuality
+            if !q.isEmpty {
+                let solved = q.compactMap(\.error)
+                let failed = q.filter { $0.error == nil }
+                let mean = solved.isEmpty ? 0 : solved.reduce(0, +) / Double(solved.count)
+                let rating = Self.rating(mean: mean, solvedFraction: Double(solved.count) / Double(q.count))
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        SectionTitle(title: "Solve Quality", symbol: "waveform.path.ecg")
+                        Label(rating.0, systemImage: rating.2)
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(rating.1)
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .glassEffect(.regular.tint(rating.1.opacity(0.2)), in: .capsule)
+                    }
+                    Chart {
+                        ForEach(q) { f in
+                            if let e = f.error {
+                                AreaMark(x: .value("Frame", f.frame), y: .value("Error (px)", e))
+                                    .foregroundStyle(LinearGradient(colors: [Color.accentColor.opacity(0.35), .clear],
+                                                                    startPoint: .top, endPoint: .bottom))
+                                    .interpolationMethod(.monotone)
+                                LineMark(x: .value("Frame", f.frame), y: .value("Error (px)", e))
+                                    .foregroundStyle(Color.accentColor)
+                                    .interpolationMethod(.monotone)
+                            } else {
+                                RuleMark(x: .value("Frame", f.frame))
+                                    .foregroundStyle(.red.opacity(0.55))
+                                    .lineStyle(StrokeStyle(lineWidth: 2))
+                            }
+                        }
+                        RuleMark(y: .value("Mean", mean))
+                            .foregroundStyle(.secondary)
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .annotation(position: .top, alignment: .trailing) {
+                                Text(String(format: "mean %.2f px", mean)).font(.caption2).foregroundStyle(.secondary)
+                            }
+                    }
+                    .chartXAxisLabel("Frame")
+                    .chartYAxisLabel("px")
+                    .frame(height: 150)
+                    if !failed.isEmpty {
+                        Label("\(failed.count) frame\(failed.count == 1 ? "" : "s") didn't solve (red). The camera is interpolated across them in Blender.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else if let worst = q.max(by: { ($0.error ?? 0) < ($1.error ?? 0) }), let e = worst.error {
+                        Text(String(format: "Every frame solved. Highest error %.2f px at frame %d.", e, worst.frame))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(18)
+                .glassCard(24)
+            }
+        }
+    }
+
+    static func rating(mean: Double, solvedFraction: Double) -> (String, Color, String) {
+        if solvedFraction < 0.7 { return ("Partial", .orange, "exclamationmark.triangle") }
+        switch mean {
+        case ..<0.6: return ("Excellent", .green, "checkmark.seal.fill")
+        case ..<1.0: return ("Good", .green, "checkmark.circle.fill")
+        case ..<2.0: return ("Fair", .yellow, "circle.lefthalf.filled")
+        default: return ("Poor", .red, "xmark.octagon.fill")
+        }
+    }
+}
+
+/// Camera exports for other apps, written next to the .blend.
+private struct ExportsSection: View {
+    let job: TrackJob
+
+    private struct Item: Identifiable {
+        let url: URL
+        var id: URL { url }
+        var info: (title: String, app: String, symbol: String) {
+            switch url.pathExtension.lowercased() {
+            case "fbx": ("FBX", "Maya · C4D · Unreal · Unity", "cube")
+            case "abc": ("Alembic", "Houdini · Maya · C4D", "circle.hexagongrid")
+            case "jsx": ("After Effects", "File › Scripts › Run Script File", "sparkles.tv")
+            case "nk": ("Nuke Camera", "Paste into a Nuke script", "camera.aperture")
+            case "chan": ("Nuke .chan", "Camera › Import chan file", "list.number")
+            default: (url.pathExtension.uppercased(), "", "doc")
+            }
+        }
+    }
+
+    var body: some View {
+        if job.status == .finished {
+            let dir = job.projectDir.appendingPathComponent("exports", isDirectory: true)
+            let order = ["jsx", "fbx", "abc", "nk", "chan"]
+            let items = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+                .filter { order.contains($0.pathExtension.lowercased()) }
+                .sorted { order.firstIndex(of: $0.pathExtension.lowercased())! < order.firstIndex(of: $1.pathExtension.lowercased())! }
+                .map(Item.init)
+            if !items.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    SectionTitle(title: "Exports", symbol: "square.and.arrow.up")
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 2), spacing: 10) {
+                        ForEach(items) { item in
+                            Button {
+                                NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: item.info.symbol)
+                                        .font(.title3)
+                                        .foregroundStyle(.tint)
+                                        .frame(width: 26)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(item.info.title).font(.callout.weight(.semibold))
+                                        Text(item.info.app).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    }
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "arrow.up.forward.square").foregroundStyle(.secondary)
+                                }
+                                .padding(12)
+                                .contentShape(.rect(cornerRadius: 16))
+                            }
+                            .buttonStyle(.plain)
+                            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16, style: .continuous))
+                            .help("Show \(item.url.lastPathComponent) in Finder")
+                        }
+                    }
+                }
+                .padding(18)
+                .glassCard(24)
+            }
         }
     }
 }

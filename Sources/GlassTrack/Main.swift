@@ -23,6 +23,9 @@ enum Entry {
             if a.count > 2, let q = QualityPreset(rawValue: a[2]) { s.quality = q }
             if a.count > 3, let n = Int(a[3]) { s.frameStep = n }
             if a.dropFirst(4).contains("mask") { s.maskPeople = true }
+            if let h = a.dropFirst(4).first(where: { $0.hasPrefix("height=") }), let m = Double(h.dropFirst(7)) {
+                s.cameraHeight = m
+            }
             s.undistort = false
             let job = TrackJob(input: URL(fileURLWithPath: a[0]), settings: s,
                                outputRoot: URL(fileURLWithPath: a[1]))
@@ -170,7 +173,8 @@ final class JobStore {
 
     private static var storeURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GlassTrack", isDirectory: true)
+            .appendingPathComponent(Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "GlassTrack",
+                                    isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("tracks.json")
     }

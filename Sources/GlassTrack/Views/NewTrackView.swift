@@ -306,6 +306,31 @@ private struct DraftEditor: View {
                         Toggle("", isOn: $job.settings.singleCamera).toggleStyle(.liquidGlass).labelsHidden()
                     }
                     Hairline()
+                    SettingRow(symbol: "square.bottomhalf.filled", color: .brown, title: "Detect ground plane",
+                               subtitle: "Level the scene on the floor and add a shadow catcher") {
+                        Toggle("", isOn: $job.settings.detectGround).toggleStyle(.liquidGlass).labelsHidden()
+                    }
+                    Hairline()
+                    SettingRow(symbol: "ruler", color: .teal, title: "Camera height",
+                               subtitle: job.settings.cameraHeight > 0
+                                   ? "Scene is in real metres (camera ≈ \(String(format: "%.2f", job.settings.cameraHeight)) m above the ground)"
+                                   : "Off — scale is arbitrary. Set it for real-world metres") {
+                        HStack(spacing: 10) {
+                            if job.settings.cameraHeight > 0 {
+                                GlassStepper(value: Binding(
+                                    get: { Int((job.settings.cameraHeight * 100).rounded()) },
+                                    set: { job.settings.cameraHeight = Double($0) / 100 }),
+                                             range: 10...3000, step: 5, suffix: " cm")
+                                    .transition(.scale.combined(with: .opacity))
+                            }
+                            Toggle("", isOn: Binding(
+                                get: { job.settings.cameraHeight > 0 },
+                                set: { on in withAnimation(.snappy) { job.settings.cameraHeight = on ? 1.5 : 0 } }))
+                                .toggleStyle(.liquidGlass).labelsHidden()
+                        }
+                        .disabled(!job.settings.detectGround)
+                    }
+                    Hairline()
                     SettingRow(symbol: "person.crop.rectangle", color: .pink, title: "Mask people",
                                subtitle: "Ignore actors and passers-by when tracking") {
                         Toggle("", isOn: $job.settings.maskPeople).toggleStyle(.liquidGlass).labelsHidden()
