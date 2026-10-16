@@ -258,4 +258,5 @@ struct JobSnapshot: Codable {
     var frameMap: [String: Int]
     var extractWidth: Int?
     var extractHeight: Int?
+    var platePath: String?
 }

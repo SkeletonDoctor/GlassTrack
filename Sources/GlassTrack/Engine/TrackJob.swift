@@ -84,6 +84,7 @@ final class TrackJob: Identifiable {
         finishedAt = s.finishedAt
         blendURL = s.blendPath.map { URL(fileURLWithPath: $0) }
         frameMap = s.frameMap
+        platePath = s.platePath
         if let w = s.extractWidth, let h = s.extractHeight { extractSize = (w, h) }
         folderName = s.folderName
 
@@ -106,7 +107,7 @@ final class TrackJob: Identifiable {
                     status: status, stages: stages, log: Array(log.suffix(400)), videoInfo: videoInfo,
                     imageCount: imageCount, stats: stats, startedAt: startedAt, finishedAt: finishedAt,
                     blendPath: blendURL?.path, frameMap: frameMap,
-                    extractWidth: extractSize?.0, extractHeight: extractSize?.1)
+                    extractWidth: extractSize?.0, extractHeight: extractSize?.1, platePath: platePath)
     }
 
     /// Restores the thumbnail of a track loaded from disk.
@@ -312,6 +313,16 @@ final class TrackJob: Identifiable {
             return
         }
 
+        do {
+            try await extractWithAVFoundation()
+            return
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            emit("AVFoundation couldn't read this file (\(error.localizedDescription)); using FFmpeg.")
+            platePath = nil
+        }
+
         guard let ffmpeg = ToolLocator.ffmpeg(), let ffprobe = ToolLocator.ffprobe() else {
             throw PipelineError("FFmpeg is not installed.")
         }
@@ -372,6 +383,32 @@ final class TrackJob: Identifiable {
         }
         frameMap = frames
         update(.extract) { $0.detail = "\(files.count) frames @ \(outW)×\(outH)" }
+    }
+
+    /// Normalised plate written for VFR / HDR / rotated sources (nil = use the original video).
+    var platePath: String?
+
+    private func extractWithAVFoundation() async throws {
+        let jpegQ: Double = settings.jpegQuality <= 2 ? 0.95 : settings.jpegQuality <= 4 ? 0.9 : 0.8
+        let plan = VideoFrameExtractor.Plan(sampling: settings.sampling, frameStep: settings.frameStep,
+                                            targetFPS: settings.targetFPS, maxFrames: settings.maxFrames,
+                                            maxEdge: settings.quality.frameMaxEdge, jpegQuality: jpegQ)
+        let r = try await VideoFrameExtractor.extract(
+            from: inputURL, imagesDir: imagesDir,
+            plateURL: projectDir.appendingPathComponent("plate.mp4"), plan: plan
+        ) { [weak self] fraction, detail in
+            self?.update(.extract) { $0.fraction = fraction; $0.detail = detail }
+        }
+        for note in r.notes { emit(note) }
+        frameMap = r.frames
+        imageCount = r.frames.count
+        extractSize = (r.extractWidth, r.extractHeight)
+        platePath = r.plateURL?.path
+        videoInfo = VideoInfo(width: r.sourceWidth, height: r.sourceHeight, fps: r.fps,
+                              frameCount: r.frameCount, duration: r.duration)
+        var detail = "\(r.frames.count) frames @ \(r.extractWidth)×\(r.extractHeight)"
+        if !r.notes.isEmpty { detail += " · " + r.notes.map { $0.components(separatedBy: " →").first ?? $0 }.joined(separator: ", ") }
+        update(.extract) { $0.detail = detail }
     }
 
     @ObservationIgnored private var frameMap: [String: Int] = [:]
@@ -598,7 +635,7 @@ final class TrackJob: Identifiable {
             // Every frame was undistorted, so the undistorted sequence is a full plate.
             meta["plate"] = "undistorted/images/" + (frameMap.keys.sorted().first ?? "frame_000001.jpg")
         } else if inputKind == .video {
-            meta["plate"] = inputURL.path
+            meta["plate"] = platePath ?? inputURL.path
             meta["undistorted"] = false
             if settings.undistort { meta["model"] = "sparse_txt" }  // keep plate & lens consistent
         } else {
