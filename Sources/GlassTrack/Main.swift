@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 @main
 enum Entry {
@@ -7,9 +8,33 @@ enum Entry {
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--cli") {
             runCLI(Array(args[(i + 1)...]))
+        } else if args.contains("--check-update") || args.contains("--install-update") {
+            runUpdateCLI(install: args.contains("--install-update"))
         } else {
             GlassTrackApp.main()
         }
+    }
+
+    /// Headless update: `--check-update` reports the latest release, `--install-update` also
+    /// installs it (without relaunching).
+    static func runUpdateCLI(install: Bool) {
+        Task { @MainActor in
+            do {
+                let release = try await Updater.fetchLatest()
+                let newer = Updater.isNewer(release.version, than: Updater.currentVersion)
+                print("Installed: \(Updater.currentVersion)  Latest: \(release.version)"
+                      + (newer ? "  (update available)" : "  (up to date)"))
+                if install && newer {
+                    try await Updater.shared.install(release)
+                    print("Installed GlassTrack \(release.version) at \(Bundle.main.bundleURL.path)")
+                }
+                exit(0)
+            } catch {
+                print("Update failed: \(error.localizedDescription)")
+                exit(1)
+            }
+        }
+        RunLoop.main.run()
     }
 
     /// Headless mode: GlassTrack --cli <video|folder> <outputDir> [preview|balanced|high|ultra] [step]
@@ -66,13 +91,16 @@ struct GlassTrackApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var store = JobStore.shared
     @State private var toolchain = Toolchain()
+    @State private var updater = Updater.shared
 
     var body: some Scene {
         WindowGroup("GlassTrack") {
             ContentView()
                 .environment(store)
                 .environment(toolchain)
+                .environment(updater)
                 .frame(minWidth: 1040, minHeight: 680)
+                .onAppear { updater.startAutomaticChecks() }
                 .onOpenURL { store.pendingOpen = $0 }
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
@@ -84,12 +112,22 @@ struct GlassTrackApp: App {
                 Button("New Track…") { store.selection = nil }
                     .keyboardShortcut("n")
             }
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { Task { await updater.check(manual: true) } }
+                    .disabled(updater.isBusy)
+            }
+            CommandGroup(replacing: .help) {
+                Button("GlassTrack on GitHub") { NSWorkspace.shared.open(Updater.repoURL) }
+                Button("Release Notes") { NSWorkspace.shared.open(Updater.releasesURL) }
+                Button("Report a Problem…") { NSWorkspace.shared.open(Updater.issuesURL) }
+            }
         }
 
         Settings {
             SettingsView()
                 .environment(store)
                 .environment(toolchain)
+                .environment(updater)
         }
     }
 }
@@ -146,6 +184,10 @@ final class JobStore {
         jobs.insert(job, at: 0)
         selection = job.id
         defaultSettings = job.settings
+        // Ask once, at the moment it matters: a solve is about to run for a while.
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
+        }
         save()
         pump()
     }
@@ -233,8 +275,12 @@ final class JobStore {
         next.start()
         Task { @MainActor in
             while next.status == .running || next.status == .idle {
+                // Overall progress on the Dock icon, so a long solve can be watched from anywhere.
+                let badge = next.status == .running ? "\(Int(next.overallProgress * 100))%" : nil
+                if NSApp.dockTile.badgeLabel != badge { NSApp.dockTile.badgeLabel = badge }
                 try? await Task.sleep(for: .milliseconds(500))
             }
+            NSApp.dockTile.badgeLabel = nil
             notifyFinished(next)
             pump()
         }
@@ -243,6 +289,17 @@ final class JobStore {
     private func notifyFinished(_ job: TrackJob) {
         if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
         NSSound(named: job.status == .finished ? "Glass" : "Basso")?.play()
+        guard !NSApp.isActive, job.status != .cancelled, Bundle.main.bundleIdentifier != nil else { return }
+        let content = UNMutableNotificationContent()
+        if job.status == .finished {
+            content.title = "Camera track finished"
+            content.body = job.blendURL != nil ? "\(job.name) is ready to open in Blender." : "\(job.name) is solved."
+        } else {
+            content.title = "Camera track failed"
+            content.body = "\(job.name) couldn't be solved. Open GlassTrack for details."
+        }
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: job.id.uuidString, content: content, trigger: nil))
     }
 }
 

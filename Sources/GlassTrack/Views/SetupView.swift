@@ -147,12 +147,14 @@ private struct ToolRow: View {
 struct SettingsView: View {
     @Environment(JobStore.self) private var store
     @Environment(Toolchain.self) private var toolchain
+    @Environment(Updater.self) private var updater
     @AppStorage(ToolLocator.colmapKey) private var colmapPath = ""
     @AppStorage(ToolLocator.ffmpegKey) private var ffmpegPath = ""
     @AppStorage(ToolLocator.ffprobeKey) private var ffprobePath = ""
     @AppStorage(ToolLocator.blenderKey) private var blenderPath = ""
 
     var body: some View {
+        @Bindable var updater = updater
         TabView {
             Form {
                 Section("Tool locations (leave empty to auto-detect)") {
@@ -184,6 +186,19 @@ struct SettingsView: View {
                                 p.canCreateDirectories = true
                                 if p.runModal() == .OK, let u = p.url { store.outputRoot = u }
                             }
+                        }
+                    }
+                }
+                Section("Updates") {
+                    Toggle("Check for updates automatically", isOn: $updater.autoCheck)
+                    LabeledContent("GlassTrack \(Updater.currentVersion)") {
+                        HStack {
+                            if let checked = updater.lastChecked {
+                                Text("Checked \(checked.formatted(.relative(presentation: .named)))")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Button("Check Now") { Task { await updater.check(manual: true) } }
+                                .disabled(updater.isBusy)
                         }
                     }
                 }

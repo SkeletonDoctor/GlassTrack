@@ -3,10 +3,10 @@ import SwiftUI
 struct ContentView: View {
     @Environment(JobStore.self) private var store
     @Environment(Toolchain.self) private var toolchain
-    @State private var showSetup = false
+    @Environment(Updater.self) private var updater
 
     var body: some View {
-        @Bindable var store = store
+        @Bindable var updater = updater
         NavigationSplitView {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 230, ideal: 260, max: 320)
@@ -28,6 +28,7 @@ struct ContentView: View {
             .animation(.smooth, value: store.selection)
         }
         .onAppear { toolchain.refresh() }
+        .sheet(isPresented: $updater.showSheet) { UpdateSheet() }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -43,6 +44,7 @@ struct ContentView: View {
 
 struct SidebarView: View {
     @Environment(JobStore.self) private var store
+    @Environment(Updater.self) private var updater
     @Environment(Toolchain.self) private var toolchain
 
     var body: some View {
@@ -84,9 +86,16 @@ struct SidebarView: View {
                                               : .regular.interactive(),
                                      in: .rect(cornerRadius: 16, style: .continuous))
                         .contextMenu {
+                            if job.status == .finished, let blend = job.blendURL {
+                                Button("Open in Blender") { NSWorkspace.shared.open(blend) }
+                            }
                             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([job.projectDir]) }
                             if job.status == .running {
                                 Button("Cancel") { job.cancel() }
+                            } else if job.status != .idle {
+                                Button(job.status == .finished ? "Solve Again" : "Try Again") {
+                                    store.retry(job, fromScratch: job.status == .finished)
+                                }
                             }
                             Divider()
                             Button("Remove from List", role: .destructive) { store.remove(job) }
@@ -99,8 +108,12 @@ struct SidebarView: View {
         }
         .scrollContentBackground(.hidden)
         .safeAreaInset(edge: .bottom) {
-            ToolStatusFooter()
-                .padding(12)
+            VStack(spacing: 8) {
+                UpdateBanner()
+                ToolStatusFooter()
+            }
+            .padding(12)
+            .animation(.smooth, value: updater.offered)
         }
     }
 }
